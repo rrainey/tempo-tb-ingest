@@ -48,10 +48,51 @@ def daemon(
 @app.command()
 def promote(
     config: Annotated[Path | None, typer.Option(help="TOML config file")] = None,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Apply without confirmation")] = False,
+    reattribute: Annotated[
+        bool,
+        typer.Option("--reattribute", help="Re-bind unmapped sessions from device-owners.json"),
+    ] = False,
 ) -> None:
     """Group staged sessions into test-data analysis cases (propose-and-confirm)."""
-    typer.echo(f"promote: {_NOT_YET}", err=True)
-    raise typer.Exit(code=2)
+    from tempo_tb_ingest import promote as promote_mod
+    from tempo_tb_ingest.config import Config, ConfigError
+    from tempo_tb_ingest.owners import OwnersRegistry
+    from tempo_tb_ingest.store import Store
+
+    try:
+        cfg = Config.load(config)
+    except ConfigError as exc:
+        typer.echo(f"promote: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    try:
+        store = Store(
+            staging_root=cfg.store.staging_root,
+            data_dir=cfg.store.data_dir,
+            spool_dir=cfg.harvest.spool_dir,
+        )
+    except OSError as exc:
+        typer.echo(f"promote: cannot open store: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    try:
+        if reattribute:
+            registry = OwnersRegistry(cfg.store.resolved_owners_file())
+            updated = promote_mod.reattribute(store, registry)
+            typer.echo(f"reattributed {updated} session(s)")
+
+        proposal = promote_mod.build_proposal(store, cfg)
+        typer.echo(promote_mod.render_proposal(proposal))
+        if not proposal.cases:
+            return
+        if not yes and not typer.confirm(f"Apply {len(proposal.cases)} case(s) to test-data?"):
+            typer.echo("aborted; nothing applied")
+            raise typer.Exit(code=1)
+        created = promote_mod.apply_proposal(proposal, store, cfg)
+        for case_dir in created:
+            typer.echo(f"created {case_dir}")
+    finally:
+        store.close()
 
 
 @app.command()

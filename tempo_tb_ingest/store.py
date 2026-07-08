@@ -232,6 +232,17 @@ class Store:
         )
         self._db.commit()
 
+    def update_attribution(
+        self, device_id: str, session_key: str, jumper: str, is_lo: bool
+    ) -> None:
+        """Re-bind a session's jumper (promote --reattribute, design §3.11)."""
+        self._db.execute(
+            "UPDATE sessions SET jumper = ?, jumper_is_lo = ?"
+            " WHERE device_id = ? AND session_key = ?",
+            (jumper, int(is_lo), device_id, session_key),
+        )
+        self._db.commit()
+
     # -- maintenance ------------------------------------------------------------
 
     def rebuild_index(self) -> int:
