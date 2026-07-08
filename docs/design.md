@@ -441,7 +441,7 @@ core and are all testable without hardware.
 | Mid-transfer disconnect | keep `.part`; resume on next attempt at byte offset | `transfer.failed(resumable=true)` |
 | Device starts logging mid-harvest | same as disconnect (device drops BLE) | same |
 | `truncated: true` in session list | harvest what's listed; persistent warning state until cleared | `harvest.truncated` |
-| Short/zero-byte download | never stored; retry as failure | `transfer.failed(reason=short)` |
+| Short/zero-byte download | never stored; that session skipped loudly, the rest of the harvest proceeds (real case: a 0-byte `19700101/...` GPS-less boot artifact observed on 0001's card) | `store.error` |
 | Duplicate SHA-256, different session key | store anyway; warn (possible card clone) | `store.duplicate_hash` |
 | Unprovisioned name `Tempo-BT` (no suffix) | rejected for processing until renamed; surfaced for operator | `device.provisioning_needed` |
 | Same device id at two addresses simultaneously | both blocked from harvest until resolved; loud warning | `device.identity_conflict` |

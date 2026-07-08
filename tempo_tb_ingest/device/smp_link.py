@@ -23,6 +23,7 @@ from typing import IO, Any
 from smpclient import SMPClient
 from smpclient.generics import error, error_v1, error_v2, success
 from smpclient.requests.file_management import FileDownload, FileStatus
+from smpclient.transport import SMPTransportDisconnected
 from smpclient.transport.ble import SMPBLETransport
 
 from tempo_tb_ingest.device import tempo_group as tg
@@ -130,12 +131,18 @@ class SmpLink(TempoDeviceLink):
         """Send one SMP request; map errors into the LinkError taxonomy."""
         try:
             response = await self._client.request(request)
+        except SMPTransportDisconnected as exc:
+            # the characterized mid-transfer failure mode (step 7, 2026-07-08):
+            # link drop -> SMPTransportDisconnected; sink keeps a byte-exact,
+            # chunk-aligned prefix and offset-resume completes identically
+            raise LinkDisconnected(f"{self._address}: {exc}") from exc
         except TimeoutError as exc:
             raise LinkDisconnected(f"{self._address}: request timed out: {exc}") from exc
         except LinkError:
             raise
         except Exception as exc:
-            # bleak disconnects surface as assorted exceptions; step 7 refines
+            # conservative catch-all: unknown transport failures are treated
+            # as resumable disconnects rather than crashing the daemon
             raise LinkDisconnected(f"{self._address}: {exc}") from exc
 
         if success(response):

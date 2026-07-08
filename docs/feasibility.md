@@ -329,6 +329,72 @@ BLE via the new `smpclient`-based `smp_link` (`make live`, 43.9 s, all passed):
 Connect-retry (4 × 3 s) absorbed the known miss-discovery-after-disconnect behavior;
 zero flakes across 10 sequential connect/disconnect cycles.
 
+### Implementation step 7 — 2026-07-08 (fault characterization, destructive tier)
+
+Against dev device `Tempo-BT-0010` with a `/SD:/testok`-marked card (probe verified
+True over BLE before any destructive step):
+
+- **Failure surface characterized**: a mid-transfer link kill raises
+  `smpclient.transport.SMPTransportDisconnected`; the sink retains a **byte-exact,
+  chunk-aligned prefix** consistent with the last progress callback (295,936 of
+  843,241 bytes in the characterization run). `smp_link` now maps this exception
+  explicitly to `LinkDisconnected` (resumable).
+- **Resume verified on hardware**: fresh connection + offset resume completed the
+  file; SHA-256 identical to the uninterrupted baseline.
+- Baseline throughput on this device/card: ~38.6 KB/s.
+- Encoded as a permanent automated test: `tests/test_link_destructive.py`
+  (`make destructive`), which hard-fails without the testok marker and performs
+  kill-at-35% → prefix check → resume → byte-identity. Passed in 66 s.
+- Operational note: a killed-but-undisconnected BleakClient corrupts subsequent
+  D-Bus usage in-process (`OSError: Bad file descriptor` on reconnect) — always
+  `disconnect()` a dead link before opening a new connection; the harvest worker's
+  job cleanup does this by design.
+
+### Implementation steps 8–9 — 2026-07-08 (scanner + presence, live bench)
+
+Bench validation with shortened thresholds (`lost_after=30 s`, `absent_after=90 s`),
+real radio, multiple devices staged by the operator:
+
+| Check | Result |
+|---|---|
+| Away detection | ✅ `device.away` 31 s after Tempo-BT-0010 powered off (spec 30 s) |
+| Return detection | ✅ `device.returned` with `absent_for_s=155.6` on reappearance + harvest trigger fired |
+| Multi-device tracking | ✅ Tempo-BT-0001 and -0002 tracked concurrently (`device.new` + backlog triggers; 0002 later `device.away`) |
+| Unprovisioned surfacing | ✅ bare `Tempo-BT` unit → `device.provisioning_needed`, never tracked for harvest |
+| `device.seen` throttling | ✅ 1/s against a radio delivering several advertisements per second |
+
+Note: 0010 resumed the same MAC across this power cycle — consistent with earlier
+observations that addresses repeat in practice; identity remains name-suffix-keyed
+regardless.
+
+### Implementation step 12 — 2026-07-08 (live harvest validation)
+
+Full pipeline (presence-triggered worker → smp_link → store/index) against real
+devices, scratch staging root, live `device-owners.json` (0001→riley,
+0007→scott_z LO). Devices 0001 (26 sessions incl. a real 0-byte `19700101` boot
+artifact) and 0007 (2 sessions; renamed from bare `Tempo-BT` after its 1.5.0-reflash
+settings wipe — second confirmed occurrence).
+
+**Read-only pass:**
+
+| Check | Result |
+|---|---|
+| `rebuild-index` on real staged data | ✅ 14 sessions indexed from a copied tree |
+| Session diff | ✅ exactly the 12 unknown sessions selected, listing order preserved |
+| Zero-byte session | ✅ refused loudly (`store.error`), harvest continued (worker fix made during this step: bad sessions skip, not abort) |
+| Downloads | ✅ 13 sessions / 11.2 MB across both devices, ~44 KB/s effective |
+| **Byte-identity acceptance** | ✅ deliberately-deleted `20260201/02E1741B` re-downloaded → SHA-256 identical to the manual SD copy |
+| Harvest-time attribution | ✅ `riley` on 0001's sessions, `scott_z` (+LO flag) on 0007's |
+| Cross-device evidence | ✅ scott_z `089D3D65` exit 15:22:58.125Z vs riley `00BAF6AB` exit 15:22:59.449Z — **1.3 s apart**: the real 20260705 2-way, ready-made ground truth for promote grouping |
+
+**Destructive pass (0010, testok gate probed True first):** harvest killed at
+~304 KB via link-kill → `harvest.failed(will_retry)` → sighting-driven retry →
+`resumed_from=428032` → completed; SHA-256 identical to both the step-7 baseline
+and an independent clean re-download.
+
+A 1,269-event live recording from the read-only pass is preserved as
+`tests/fixtures/live-harvest-20260708.jsonl` (dashboard development input).
+
 ## Roadmap
 
 1. **v1 daemon (Radio Option 1, Option A stack):** scanner + return detector + single
