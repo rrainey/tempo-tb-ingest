@@ -1,19 +1,29 @@
-"""Step 5/6: the TempoDeviceLink behavior contract.
+"""Steps 5/6: the TempoDeviceLink behavior contract.
 
-One behavior spec, two implementations: every test in LinkContract runs
-against the fake link (offline, always) and — via the `live` marker fixture
-added in step 6 — against a real Tempo-BT over BLE. Fake-only fault-injection
-behavior lives in TestFakeFaults below.
+One behavior spec, two implementations. Every test in TestLinkContract runs
+against the fake link (offline, always) and — under ``-m live`` with a
+Tempo-BT in range — against the real smp_link over BLE. Each implementation
+supplies a ``DeviceTruth`` describing what is known to be on the device, so
+the assertions are data-agnostic. Fake-only fault-injection behavior lives in
+TestFakeFaults.
+
+Live tier: read-only throughout; expects device ``TEMPO_LIVE_DEVICE``
+(default Tempo-BT-0001) whose session ``20260201/02E1741B`` is already staged
+in tempo-testbed/device-data (the byte-identity reference).
 """
 
 import hashlib
 import io
+import os
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
 from tempo_tb_ingest.device.fake_link import FakeLink
 from tempo_tb_ingest.device.protocol import (
+    ConnectError,
     FileIsDirectory,
     FileNotFoundOnDevice,
     LinkDisconnected,
@@ -22,95 +32,169 @@ from tempo_tb_ingest.device.protocol import (
     log_path,
 )
 
+# --------------------------------------------------------------------------- #
+# truths
+
 FLIGHT_A = b'$PVER,"Tempo V2 1.5.0",114*72\r\n' + b"$PIMU,1086,-1.05,9.91,-4.13*29\r\n" * 400
 FLIGHT_B = b'$PVER,"Tempo V2 1.5.0",114*72\r\n' + b"$PENV,1090,650,233.0*11\r\n" * 90
 
-SESSIONS = {
+FAKE_SESSIONS = {
     "20260705/1CDD8C18": FLIGHT_A,
     "20260705/00BAF6AB": FLIGHT_B,
     "20260201/02E1741B": FLIGHT_B + FLIGHT_A,
 }
 
+LIVE_DEVICE = os.environ.get("TEMPO_LIVE_DEVICE", "Tempo-BT-0001")
+LIVE_REFERENCE = Path(
+    os.environ.get(
+        "TEMPO_LIVE_REFERENCE",
+        "/home/riley/src/tempo-testbed/device-data/TempoBT-0001/logs/20260201/02E1741B/flight.txt",
+    )
+)
+LIVE_SESSION = "20260201/02E1741B"
+
+
+@dataclass
+class DeviceTruth:
+    """What the contract may assume exists on the device under test."""
+
+    expected_sessions: set[str]  # subset of what session_list must report
+    known_session: str  # session whose flight.txt content is known
+    known_size: int
+    known_sha256: str
+    missing_path: str
+    dir_path: str
+    testok_expected: bool
+
+
+def fake_truth() -> DeviceTruth:
+    content = FAKE_SESSIONS["20260705/1CDD8C18"]
+    return DeviceTruth(
+        expected_sessions=set(FAKE_SESSIONS),
+        known_session="20260705/1CDD8C18",
+        known_size=len(content),
+        known_sha256=hashlib.sha256(content).hexdigest(),
+        missing_path="/SD:/logs/19990101/DEADBEEF/flight.txt",
+        dir_path="/SD:/logs",
+        testok_expected=False,
+    )
+
+
+def live_truth() -> DeviceTruth:
+    if not LIVE_REFERENCE.is_file():
+        pytest.skip(f"live reference copy not found: {LIVE_REFERENCE}")
+    content = LIVE_REFERENCE.read_bytes()
+    return DeviceTruth(
+        expected_sessions={LIVE_SESSION},
+        known_session=LIVE_SESSION,
+        known_size=len(content),
+        known_sha256=hashlib.sha256(content).hexdigest(),
+        missing_path="/SD:/logs/19990101/DEADBEEF/flight.txt",
+        dir_path=f"/SD:/logs/{LIVE_SESSION.split('/')[0]}",
+        testok_expected=os.environ.get("TEMPO_LIVE_TESTOK", "") == "1",
+    )
+
 
 def make_fake(**kwargs: object) -> FakeLink:
-    defaults: dict[str, object] = {"sessions": SESSIONS, "directories": {"/SD:/logs"}}
+    defaults: dict[str, object] = {"sessions": FAKE_SESSIONS, "directories": {"/SD:/logs"}}
     defaults.update(kwargs)
     return FakeLink(**defaults)  # type: ignore[arg-type]
 
 
-@pytest.fixture
-async def link() -> AsyncIterator[TempoDeviceLink]:
-    """The link under contract test. Step 6 parametrizes this with smp_link."""
-    fake = make_fake()
-    await fake.connect()
-    yield fake
-    await fake.disconnect()
+@dataclass
+class Rig:
+    link: TempoDeviceLink
+    truth: DeviceTruth
+
+
+@pytest.fixture(
+    params=["fake", pytest.param("live", marks=pytest.mark.live)],
+)
+async def rig(request: pytest.FixtureRequest) -> AsyncIterator[Rig]:
+    if request.param == "fake":
+        link: TempoDeviceLink = make_fake()
+        truth = fake_truth()
+        await link.connect()
+    else:
+        from tempo_tb_ingest.device.smp_link import SmpLink, connect_with_retry
+
+        truth = live_truth()
+        link = SmpLink(LIVE_DEVICE, connect_timeout_s=15.0)
+        await connect_with_retry(link, attempts=4, backoff_s=3.0)
+    yield Rig(link=link, truth=truth)
+    await link.disconnect()
+
+
+# --------------------------------------------------------------------------- #
+# the contract
 
 
 class TestLinkContract:
-    async def test_session_list_shape(self, link: TempoDeviceLink) -> None:
-        result = await link.session_list()
+    async def test_session_list_shape(self, rig: Rig) -> None:
+        result = await rig.link.session_list()
         assert isinstance(result, SessionListResult)
-        assert set(result.keys) == set(SESSIONS)
-        assert result.truncated is False
+        assert rig.truth.expected_sessions <= set(result.keys)
+        assert isinstance(result.truncated, bool)
 
-    async def test_read_size_of_known_file(self, link: TempoDeviceLink) -> None:
-        size = await link.read_size(log_path("20260705/1CDD8C18"))
-        assert size == len(FLIGHT_A)
+    async def test_read_size_of_known_file(self, rig: Rig) -> None:
+        size = await rig.link.read_size(log_path(rig.truth.known_session))
+        assert size == rig.truth.known_size
 
-    async def test_read_size_missing_path(self, link: TempoDeviceLink) -> None:
+    async def test_read_size_missing_path(self, rig: Rig) -> None:
         with pytest.raises(FileNotFoundOnDevice):
-            await link.read_size("/SD:/logs/19990101/DEADBEEF/flight.txt")
+            await rig.link.read_size(rig.truth.missing_path)
 
-    async def test_read_size_directory(self, link: TempoDeviceLink) -> None:
+    async def test_read_size_directory(self, rig: Rig) -> None:
         with pytest.raises(FileIsDirectory):
-            await link.read_size("/SD:/logs")
+            await rig.link.read_size(rig.truth.dir_path)
 
-    async def test_full_download_is_byte_perfect(self, link: TempoDeviceLink) -> None:
+    async def test_full_download_is_byte_perfect(self, rig: Rig) -> None:
         sink = io.BytesIO()
-        written = await link.download(log_path("20260705/1CDD8C18"), sink)
-        assert written == len(FLIGHT_A)
-        assert hashlib.sha256(sink.getvalue()).digest() == hashlib.sha256(FLIGHT_A).digest()
+        written = await rig.link.download(log_path(rig.truth.known_session), sink)
+        assert written == rig.truth.known_size
+        assert hashlib.sha256(sink.getvalue()).hexdigest() == rig.truth.known_sha256
 
-    async def test_resume_concatenates_to_identical_content(self, link: TempoDeviceLink) -> None:
-        path = log_path("20260705/00BAF6AB")
+    async def test_resume_concatenates_to_identical_content(self, rig: Rig) -> None:
+        path = log_path(rig.truth.known_session)
+        split = rig.truth.known_size // 3
         head = io.BytesIO()
-        await link.download(path, head)
-        split = len(FLIGHT_B) // 3
+        await rig.link.download(path, head)
         tail = io.BytesIO()
-        written = await link.download(path, tail, offset=split)
-        assert written == len(FLIGHT_B) - split
-        assert head.getvalue()[:split] + tail.getvalue() == FLIGHT_B
+        written = await rig.link.download(path, tail, offset=split)
+        assert written == rig.truth.known_size - split
+        whole = head.getvalue()[:split] + tail.getvalue()
+        assert hashlib.sha256(whole).hexdigest() == rig.truth.known_sha256
 
-    async def test_download_missing_path(self, link: TempoDeviceLink) -> None:
+    async def test_download_missing_path(self, rig: Rig) -> None:
         with pytest.raises(FileNotFoundOnDevice):
-            await link.download("/SD:/logs/19990101/DEADBEEF/flight.txt", io.BytesIO())
+            await rig.link.download(rig.truth.missing_path, io.BytesIO())
 
-    async def test_progress_monotonic_and_complete(self, link: TempoDeviceLink) -> None:
+    async def test_progress_monotonic_and_complete(self, rig: Rig) -> None:
         seen: list[int] = []
-        await link.download(log_path("20260705/1CDD8C18"), io.BytesIO(), progress=seen.append)
+        path = log_path(rig.truth.known_session)
+        await rig.link.download(path, io.BytesIO(), progress=seen.append)
         assert seen == sorted(seen)
-        assert seen[-1] == len(FLIGHT_A)
+        assert seen[-1] == rig.truth.known_size
 
-    async def test_probe_testok_absent(self, link: TempoDeviceLink) -> None:
-        assert await link.probe_testok() is False
+    async def test_probe_testok(self, rig: Rig) -> None:
+        assert await rig.link.probe_testok() is rig.truth.testok_expected
 
-    async def test_never_writes(self, link: TempoDeviceLink) -> None:
+    async def test_never_writes(self, rig: Rig) -> None:
         """The read-only guarantee: the interface exposes no write, and none occur."""
-        await link.session_list()
-        await link.download(log_path("20260705/1CDD8C18"), io.BytesIO())
+        await rig.link.session_list()
+        await rig.link.download(log_path(rig.truth.known_session), io.BytesIO())
         forbidden = ("write", "upload", "delete", "logger", "settings_set", "led")
-        for call in link.call_log.calls:
+        for call in rig.link.call_log.calls:
             assert not any(word in call.lower() for word in forbidden), call
 
 
-class TestFakeFaults:
-    """Fake-only: the fault-injection hooks that model step-7 hardware behavior."""
+# --------------------------------------------------------------------------- #
+# fake-only fault injection (models step-7 hardware characterization)
 
+
+class TestFakeFaults:
     async def test_connect_failures_then_success(self) -> None:
         fake = make_fake(connect_failures=2)
-        from tempo_tb_ingest.device.protocol import ConnectError
-
         for _ in range(2):
             with pytest.raises(ConnectError):
                 await fake.connect()

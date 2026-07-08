@@ -311,6 +311,24 @@ Also during phase 0.5:
   response models now carry `mag_mode: Optional[int]`, tolerant of old and new
   firmware.
 
+### Implementation step 6 — 2026-07-08 (smp_link live contract run, read-only)
+
+The `TempoDeviceLink` contract suite (10 behaviors) ran against `Tempo-BT-0001` over
+BLE via the new `smpclient`-based `smp_link` (`make live`, 43.9 s, all passed):
+
+| Behavior | Result |
+|---|---|
+| SESSION_LIST shape (known sessions ⊆ keys, `truncated` bool) | ✅ |
+| fs STATUS: known file exact size; missing → FILE_NOT_FOUND; directory → FILE_IS_DIRECTORY | ✅ |
+| Full download of `20260201/02E1741B` | ✅ SHA-256 identical to staged reference |
+| Offset-resume (head[:n] + tail-from-n) | ✅ SHA-256 identical |
+| Progress callbacks monotonic and complete | ✅ |
+| `testok` probe on production card | ✅ correctly absent |
+| Read-only guarantee (no write-shaped calls in the call log) | ✅ |
+
+Connect-retry (4 × 3 s) absorbed the known miss-discovery-after-disconnect behavior;
+zero flakes across 10 sequential connect/disconnect cycles.
+
 ## Roadmap
 
 1. **v1 daemon (Radio Option 1, Option A stack):** scanner + return detector + single
