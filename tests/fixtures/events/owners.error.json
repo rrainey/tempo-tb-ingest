@@ -1,0 +1,10 @@
+{
+  "data": {
+    "path": "/data/device-data/device-owners.json",
+    "reason": "duplicate deviceName"
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "owners.error",
+  "v": 1
+}

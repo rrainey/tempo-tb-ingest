@@ -1,0 +1,12 @@
+{
+  "data": {
+    "id": "0001",
+    "reason": "disconnected",
+    "resumable": true,
+    "session_key": "20260705/1CDD8C18"
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "transfer.failed",
+  "v": 1
+}

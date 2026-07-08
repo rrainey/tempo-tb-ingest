@@ -1,0 +1,13 @@
+{
+  "data": {
+    "bytes": 2922782,
+    "duration_s": 70.3,
+    "id": "0001",
+    "session_key": "20260705/1CDD8C18",
+    "sha256": "3dea28ef25f25f42ca7ba484b239b377c6d47d7fd46c0e108cd08937f03de858"
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "transfer.completed",
+  "v": 1
+}

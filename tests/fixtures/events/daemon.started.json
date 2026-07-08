@@ -1,0 +1,14 @@
+{
+  "data": {
+    "config": {
+      "detection": {
+        "absent_after_s": 600.0
+      }
+    },
+    "version": "0.1.0"
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "daemon.started",
+  "v": 1
+}

@@ -1,0 +1,12 @@
+{
+  "data": {
+    "bytes": 11979117,
+    "duration_s": 284.0,
+    "id": "0001",
+    "sessions_downloaded": 3
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "harvest.completed",
+  "v": 1
+}

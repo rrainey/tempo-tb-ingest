@@ -1,0 +1,10 @@
+{
+  "data": {
+    "entries": 3,
+    "path": "/data/device-data/device-owners.json"
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "owners.reloaded",
+  "v": 1
+}

@@ -1,0 +1,13 @@
+{
+  "data": {
+    "bytes_done": 1310720,
+    "bytes_total": 2922782,
+    "id": "0001",
+    "rate_bps": 43000.0,
+    "session_key": "20260705/1CDD8C18"
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "transfer.progress",
+  "v": 1
+}

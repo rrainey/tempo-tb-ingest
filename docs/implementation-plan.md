@@ -1,0 +1,332 @@
+# tempo-tb-ingest — Implementation Plan (V&V-oriented)
+
+*Draft 2026-07-08. Executes `docs/design.md`. Each step has one objective, a defined
+start point, and testable success. The automated test suite accumulates step by step;
+everything added stays in the permanent regression body and must remain green for
+every subsequent step.*
+
+## Ground rules
+
+- **A step is done when its exit criteria pass — never before, and no step starts
+  until its predecessor's exit criteria are met.** Steps are sized so one step is one
+  focused working session.
+- **Verification** = automated tests (pytest; later vitest for the dashboard).
+  **Validation** = observing the real system do the real thing (live device, user
+  present where marked 👤). Every hardware validation result is appended to the
+  validation history in `docs/feasibility.md`.
+- The default test run (`make check`: ruff + mypy --strict + pytest) is entirely
+  offline — no radios, no network, no device. Hardware tiers are opt-in markers:
+  `-m live` (read-only, any Tempo-BT) and `-m destructive` (dev device, requires the
+  `/SD:/testok` marker file — the probe is part of tier setup and hard-fails
+  without it).
+- No step may weaken a prior step's tests to pass (changing a test requires a stated
+  reason in the commit).
+- Destructive-anything on device storage: only under `-m destructive`, only after the
+  `testok` probe (CLAUDE.md constraint).
+
+## Step overview
+
+| # | Phase | Step | Success is shown by |
+|---|-------|------|---------------------|
+| 1 | Foundation | Scaffold & toolchain | `make check` green on empty package |
+| 2 | Foundation | Config module | unit tests |
+| 3 | Foundation | Event model & bus | unit tests + golden schema fixtures |
+| 4 | Foundation | Recorder & replay | round-trip tests + checked-in fixture |
+| 5 | Protocol | Group-64 messages, `TempoDeviceLink`, `fake_link` | contract tests vs fake |
+| 6 | Protocol | `smp_link` (real BLE) | contract tests vs live device 👤 (read-only) |
+| 7 | Protocol | Fault characterization on hardware 👤 | fault catalog encoded in `fake_link` + resume test |
+| 8 | Sensing | Scanner / `AdvertisementSource` | unit + live scan smoke 👤 |
+| 9 | Sensing | Presence & return state machine | exhaustive unit tests (simulated clock); bench validation 👤 |
+| 10 | Harvest | Store, session index & ownership registry | unit/integration on tmp trees |
+| 11 | Harvest | Harvest worker end-to-end vs fakes | integration incl. fault scenarios |
+| 12 | Harvest | Live harvest validation 👤 (read-only, then destructive) | byte-identity acceptance; resume on real interruption |
+| 13 | Harvest | `promote`: grouping, attribution, proposals | golden proposals vs real multi-device logs; user review 👤 |
+| 14 | Service | HTTP API: `/state`, `/events`, `/healthz` | WS contract tests, replay-driven |
+| 15 | Service | Daemon assembly & CLI | full-loop integration vs fakes; clean-shutdown test |
+| 16 | Service | Deployment & field soak 👤 | validation checklist at the dropzone |
+| 17 | Dashboard | App scaffold & data layer | vitest on client logic; replay-driven demo |
+| 18 | Dashboard | Visual implementation (per forthcoming design doc) | user review 👤 + kiosk soak |
+
+👤 = requires user participation / hardware in range.
+
+---
+
+## Phase A — Foundation (no hardware anywhere)
+
+### Step 1 — Scaffold & toolchain
+- **Start point**: empty repo (this docs/ tree only).
+- **Objective**: a testable, lintable, typed package skeleton and a one-command gate.
+- **Work**: `pyproject.toml` (deps per design §8), `tempo_tb_ingest/` package with
+  empty modules per design §3.1, `typer` CLI with `--version`/`--help`, `Makefile`
+  (`check`, `test`, `live`, `destructive`), pytest/ruff/mypy configs, `tests/`
+  layout with tier markers registered.
+- **Verification**: `make check` runs ruff + `mypy --strict` + pytest and passes with
+  a placeholder smoke test; `python -m tempo_tb_ingest --help` exits 0 (tested via
+  subprocess in the suite).
+- **Exit**: gate green; repo layout matches design §3.1.
+
+### Step 2 — Config module
+- **Start point**: Step 1 gate green.
+- **Objective**: `config.py` — complete v1 surface from design §3.9.
+- **Verification (tests added)**: defaults; TOML load; `TEMPO_INGEST_*` env
+  precedence over file; validation errors on bad values (negative timeouts, empty
+  adapter, unwritable paths flagged); round-trip of the documented example config
+  verbatim from the design doc.
+- **Exit**: unit tests cover every config field; gate green.
+
+### Step 3 — Event model & bus
+- **Start point**: Step 2 done.
+- **Objective**: `events.py` — pydantic envelope (`v/seq/ts/type/data`), the full
+  design §6.2 vocabulary as typed models, in-process bus with bounded per-subscriber
+  queues, drop-oldest + `stream.gap`.
+- **Verification (tests added)**: seq strictly monotonic under concurrent publishers;
+  fan-out ordering per subscriber; slow consumer receives `stream.gap` with correct
+  `dropped_count` and never blocks publishers; **golden JSON fixtures** for every
+  event type (serialization locked — any schema change breaks a test deliberately).
+- **Exit**: every event type in design §6.2 has a model + golden fixture; gate green.
+
+### Step 4 — Recorder & replay
+- **Start point**: Step 3 done.
+- **Objective**: `recorder.py` — JSONL append with daily rotation; replay reader
+  (`--speed`, `--loop`) publishing onto a bus.
+- **Verification (tests added)**: record→replay round-trip reproduces envelopes
+  byte-for-byte (modulo replay clock); rotation boundary; malformed-line handling is
+  loud (skip + counted, never silent). A small **hand-written fixture recording**
+  (synthetic harvest story) is checked in — it becomes the standing input for API
+  and dashboard tests in Steps 14/17.
+- **Exit**: `tempo-tb-ingest replay fixtures/synthetic-day.jsonl` runs; gate green.
+
+## Phase B — Device protocol
+
+### Step 5 — Protocol models, `TempoDeviceLink`, `fake_link`
+- **Start point**: Step 4 done.
+- **Objective**: `device/tempo_group.py` (group-64 messages ported from the smpmgr
+  plugin), `device/protocol.py` (the link interface incl. the `testok` probe and
+  `read_size`), `device/fake_link.py` (scripted device: fixture sessions on a tmp
+  tree, configurable latency/throughput, fault-injection hooks).
+- **Verification (tests added)**: message encode/decode round-trips (CBOR payloads
+  match the schemas documented in feasibility/design — including `truncated`);
+  **link contract test suite** written against the interface and executed against
+  `fake_link` (the same suite runs against `smp_link` in Step 6 — one behavior spec,
+  two implementations); fake-link fault hooks provably fire.
+- **Exit**: contract suite green on fake; gate green.
+
+### Step 6 — `smp_link` (real BLE) 👤
+- **Start point**: Step 5 done; a Tempo-BT in range (production card fine — tier is
+  read-only).
+- **Objective**: `device/smp_link.py` on `smpclient`/bleak: connect by address,
+  MTU exchange, `session_list`, `read_size`, `download(offset, sink)`, `testok`
+  probe, disconnect.
+- **Verification**: the Step-5 contract suite runs against the live device under
+  `-m live`: session list parses and includes known sessions; `read_size` of a known
+  file returns its known size; one full download SHA-256-matches the staged copy in
+  `tempo-testbed/device-data/`; `testok` probe correctly reports *absent* on the
+  production card.
+- **Validation**: user observes the live run; result appended to feasibility history.
+- **Exit**: `-m live` tier green with device present; offline gate untouched.
+
+### Step 7 — Fault characterization 👤 (resolves design open question #2)
+- **Start point**: Step 6 done; dev device with `testok`-marked card.
+- **Objective**: learn `smpclient`'s real failure surface, then encode it.
+  Scripted experiments: kill the link mid-download (power off / carry out of range /
+  device starts logging), observe exceptions and partial-sink state; verify
+  offset-resume completes and the result is byte-identical.
+- **Verification (tests added)**: `fake_link` fault catalog updated to raise exactly
+  what `smpclient` raises; offline integration test: interrupted download →
+  `.part` retained → resume → SHA-256 identical. Repeatable henceforth without
+  hardware.
+- **Validation**: one real interrupted-and-resumed transfer, byte-verified
+  (`-m destructive`, testok card).
+- **Exit**: fault catalog documented in code; resume test in the permanent suite.
+
+## Phase C — Sensing
+
+### Step 8 — Scanner
+- **Start point**: Step 7 done (no dependency on its hardware results; may start
+  after Step 5 if hardware access is the bottleneck — the only hard prerequisite is
+  the event bus).
+- **Objective**: `scanner.py` — bleak active-scan wrapper emitting
+  `AdvertisementSource` tuples; SMP-UUID/name filter; restart-with-backoff;
+  `scanner.degraded/recovered` events.
+- **Verification (tests added)**: filtering, tuple mapping, and backoff/recovery
+  logic unit-tested with a fake bleak layer (scan-failure injection).
+- **Validation 👤**: 60-second live smoke: real device appears in the source stream
+  with name and RSSI (`-m live`).
+- **Exit**: unit tests green; live smoke observed once.
+
+### Step 9 — Presence & return detection
+- **Start point**: Step 8 done.
+- **Objective**: `presence.py` — the design §3.3/§3.4 machine: id-keyed states,
+  unattributed (nameless/suffix-less) sightings held out, RSSI floor, `lost_after` /
+  `absent_after` timers, post-harvest quiescence, `identity_conflict`.
+- **Verification (tests added)**: exhaustive transition tests on a simulated clock —
+  every documented transition, plus: flapping at the RSSI floor does not re-trigger;
+  return before `absent_after` does not trigger; first-ever sighting triggers; bare
+  `Tempo-BT` never reaches RETURNED but emits `provisioning_needed`; same id at two
+  MACs → conflict + both blocked; device power-cycle mid-visit (new MAC, same id)
+  keeps continuity. This is the logic core — target effectively full branch
+  coverage.
+- **Validation 👤**: bench run with `absent_after` shortened via config: power off /
+  carry away the device, bring it back, observe `device.returned` in the event log.
+- **Exit**: transition matrix tests green; bench validation observed.
+
+## Phase D — Harvest
+
+### Step 10 — Store, session index & ownership registry
+- **Start point**: Step 9 done (only Phase A strictly required; ordered here to keep
+  one-step-at-a-time).
+- **Objective**: `store.py` — spool + atomic rename into the staging tree, SQLite
+  schema (design §3.6 incl. `jumper`/`jumper_is_lo` attribution columns), diffing,
+  dedup warning, `rebuild-index` — plus `owners.py`: the `device-owners.json`
+  registry (design §3.12): parse/validate, suffix matching, mtime hot-reload,
+  last-good-copy on error.
+- **Verification (tests added)**: staging writes land at exactly
+  `<root>/TempoBT-<id>/logs/<key>/flight.txt`; rename atomicity (no partial file
+  visible under the final path, ever); diff correctness; duplicate-hash warn path;
+  `rebuild-index` on a synthetic tree reproduces the DB (hashes recomputed);
+  DB deleted → rebuilt → identical diff behavior. Registry: valid/invalid/duplicate
+  entries, hot-reload on mtime change, `owners.error` keeps last good copy,
+  unmapped lookup returns NULL attribution.
+- **Exit**: gate green; a corrupted/absent DB is demonstrably recoverable; registry
+  behavior fully covered.
+
+### Step 11 — Harvest worker end-to-end (vs fakes)
+- **Start point**: Steps 5, 9, 10 done.
+- **Objective**: `harvest.py` — queue with coalescing, job state machine, radio
+  lock, the design §3.5 pipeline, retry policy (re-queue on next sighting, max
+  attempts, backoff).
+- **Verification (tests added)**: full pipeline integration over `fake_link` +
+  scripted advertisements: happy path (N new sessions stored + correct event
+  sequence asserted against golden recording); truncated list; zero-byte file
+  rejected; mid-transfer fault → retry on next sighting → resume → byte-identical;
+  duplicate coalescing; max-attempts exhaustion is loud; `LOGGER_CONTROL` provably
+  never sent (fake asserts on any group-64 write); harvest-time attribution recorded
+  from the registry (incl. registry edited mid-run → next harvest uses new mapping;
+  unmapped device → `jumper = NULL` + `owners.unmapped`).
+- **Exit**: the synthetic "walk in the door" story runs offline end-to-end; its
+  event log replaces/updates the Step-4 fixture recording.
+
+### Step 12 — Live harvest validation 👤
+- **Start point**: Step 11 done.
+- **Objective**: the real thing, twice over.
+  1. **Read-only** (`-m live`, any device): scratch staging root; daemon-lite run
+     harvests any unknown sessions; every file SHA-256-verified against a manual
+     SD copy. Acceptance = byte identity, per CLAUDE.md.
+  2. **Destructive** (`-m destructive`, dev device + testok card): card imaged with
+     known sessions; harvest; interrupt a transfer physically; observe resume;
+     re-image card and verify re-harvest from empty index.
+- **Validation**: user present; results appended to feasibility validation history.
+- **Exit**: both runs recorded; any surprises fed back into fake-link faults or
+  design (loop until clean).
+
+### Step 13 — `promote`: grouping, attribution, proposals
+- **Start point**: Step 10 done (Step 12 recommended first so real freshly-staged
+  sessions exist to validate against).
+- **Objective**: `promote.py` per design §3.11 — flight-info enrichment (port of
+  `flight-info.sh`), formation grouping (exit-time window + GPS cross-check),
+  case-proposal generation (`metadata.json` per `test-data/README.md`, dropzone
+  from config, `baseJumper` = load organizer), propose-and-confirm apply, `--yes`,
+  `--reattribute`.
+- **Verification (tests added)**: flight-info parser vs real fixture logs (known
+  dates/exit times from existing staged data); grouping unit tests — same-window
+  formations, singleton solo, two groups on one load split by GPS, no-exit sessions
+  excluded, missing/multiple LO flagged, unmapped sessions excluded; **golden
+  proposal test**: the existing three-device formation logs in `device-data/`
+  (20260206 / 20260228 — ground truth known from the hand-built `test-data` cases)
+  + a fixture registry must reproduce the known-correct grouping and jumper
+  assignments; apply idempotence (re-run creates nothing new); staging tree
+  untouched by apply. The GPS threshold default is settled here (design open
+  question #5) using those logs.
+- **Validation 👤**: run against the real staged `20260705` sessions with your live
+  `device-owners.json`; you review the proposal (and the generated `metadata.json`)
+  before it applies.
+- **Exit**: golden-proposal tests green; one real proposal reviewed and applied.
+
+## Phase E — Service
+
+### Step 14 — HTTP API
+- **Start point**: Step 11 done (Steps 12/13 can proceed in parallel).
+- **Objective**: `api.py` — `GET /state` (snapshot builder from live component
+  state), `WS /events`, `GET /healthz`, static file serving; snapshot-then-stream
+  semantics per design §6.
+- **Verification (tests added)**: contract tests over aiohttp test client: snapshot
+  `seq` coherence with subsequent WS events (no gap, no overlap) under concurrent
+  publishing; reconnect → re-snapshot correctness; slow-WS-client gap marker;
+  `/state` schema golden fixture; replaying the Step-11 fixture through the API
+  yields the documented §6.1/§6.2 wire format exactly.
+- **Exit**: contract suite green; wire format locked by fixtures.
+
+### Step 15 — Daemon assembly & CLI
+- **Start point**: Steps 12 & 14 done.
+- **Objective**: `cli.py daemon` wiring scanner→presence→harvest→bus→API→recorder;
+  single-instance lock; graceful shutdown (abort in-flight transfer cleanly, keep
+  `.part`, emit `daemon.stopping`); structured logging.
+- **Verification (tests added)**: whole-daemon integration on fakes: start → inject
+  advertisement story → assert staged files + event log + `/state`; second instance
+  refuses to start (lock); SIGTERM mid-transfer → `.part` retained, clean exit code,
+  restart resumes.
+- **Exit**: `tempo-tb-ingest daemon --config test.toml` survives the full synthetic
+  story; gate green.
+
+### Step 16 — Deployment & field soak 👤
+- **Start point**: Steps 13 & 15 done.
+- **Objective**: systemd unit (+ watchdog), install docs, and a real soak.
+- **Verification**: unit file lints (`systemd-analyze verify`); watchdog feeds
+  observed; journald logs structured.
+- **Validation**: workstation at the dropzone (or a bench rehearsal first): a full
+  jump-day cycle — devices leave, return, auto-harvest with correct jumper
+  attribution from that day's `device-owners.json`, then `promote` groups the day's
+  jumps and you confirm the proposal into `test-data/`. Tuning notes (absent_after,
+  RSSI floor, exit_window) recorded; results appended to feasibility history.
+  **This validates the central use-case requirement end-to-end.**
+- **Exit**: soak report written; open tuning items filed into config defaults.
+
+## Phase F — Dashboard
+
+### Step 17 — Dashboard scaffold & data layer
+- **Start point**: Step 14 done (replay + API are its complete dev environment; no
+  hardware ever needed).
+- **Objective**: `dashboard/` Vite + React + TS scaffold; snapshot-then-stream
+  client (reconnect, re-snapshot on `daemon.started`, stale indicator); typed event
+  models generated/mirrored from the §6 contract; a minimal state view proving the
+  pipe (device roster + raw event feed).
+- **Verification (tests added)**: vitest on the client reducer: fixture replay in →
+  expected view-model out; reconnect logic; stale detection. Build artifact served
+  by the daemon (`GET /` integration test).
+- **Exit**: `replay --loop` + browser shows live-updating roster; tests green.
+
+### Step 18 — Dashboard visual implementation 👤
+- **Start point**: Step 17 done **and** the user's dashboard visual-design document
+  exists.
+- **Objective**: the full-screen, graphics-design-oriented visualization per that
+  document, driven purely by the §6 contract.
+- **Verification**: reducer/view-model tests extended for each new visual state;
+  replay fixtures for demo scenarios checked in.
+- **Validation**: user design review against replay-driven demo scenarios; kiosk
+  soak (24 h, no leaks/stalls, stale indicator behaves on daemon restart).
+- **Exit**: user sign-off; demo replay reproducible on any machine with a browser.
+
+---
+
+## The accumulated regression body
+
+By step 18 the permanent, ordered test suite is:
+
+1. toolchain smoke (S1) → config (S2) → event schemas incl. golden wire fixtures
+   (S3) → record/replay round-trip (S4)
+2. protocol codecs + link contract suite [fake & live-marker] (S5/S6) → fault
+   catalog + resume (S7)
+3. scanner logic (S8) → presence transition matrix (S9)
+4. store/index/rebuild + ownership registry (S10) → harvest pipeline stories incl.
+   faults and attribution (S11) → promote grouping + golden proposals vs real
+   multi-device logs (S13)
+5. API contract + wire-format fixtures (S14) → whole-daemon stories, lock, shutdown
+   (S15)
+6. dashboard reducer/view-model + served-artifact integration (S17/S18)
+7. hardware tiers, run on demand: `-m live` (S6/S8/S12), `-m destructive`
+   (S7/S12) — gated by the `testok` probe; promote validation on real staged
+   sessions (S13 👤)
+
+Fixtures (golden event JSON, synthetic JSONL recordings, fake-device session trees)
+are versioned with the code; a contract change is visible as a fixture diff in
+review, never as a silent drift.

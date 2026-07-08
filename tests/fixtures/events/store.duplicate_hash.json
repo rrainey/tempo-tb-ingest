@@ -1,0 +1,12 @@
+{
+  "data": {
+    "duplicate_of": "0001/20260705/1CDD8C18",
+    "id": "0002",
+    "session_key": "20260705/00BAF6AB",
+    "sha256": "3dea28ef25f25f42ca7ba484b239b377c6d47d7fd46c0e108cd08937f03de858"
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "store.duplicate_hash",
+  "v": 1
+}

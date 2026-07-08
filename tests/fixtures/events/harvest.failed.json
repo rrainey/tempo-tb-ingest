@@ -1,0 +1,12 @@
+{
+  "data": {
+    "attempt": 2,
+    "id": "0001",
+    "reason": "connect timeout",
+    "will_retry": true
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "harvest.failed",
+  "v": 1
+}

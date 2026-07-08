@@ -1,0 +1,13 @@
+{
+  "data": {
+    "id": "0001",
+    "macs": [
+      "DC:BD:F1:0D:F1:D9",
+      "AA:BB:CC:DD:EE:FF"
+    ]
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "device.identity_conflict",
+  "v": 1
+}

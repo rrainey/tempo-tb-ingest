@@ -1,0 +1,13 @@
+{
+  "data": {
+    "file_index": 1,
+    "file_total": 3,
+    "id": "0001",
+    "resumed_from": 0,
+    "session_key": "20260705/1CDD8C18"
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "transfer.started",
+  "v": 1
+}

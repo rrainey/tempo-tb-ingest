@@ -1,0 +1,12 @@
+{
+  "data": {
+    "count": 26,
+    "id": "0001",
+    "new_count": 3,
+    "truncated": false
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "harvest.session_list",
+  "v": 1
+}

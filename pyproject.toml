@@ -1,0 +1,56 @@
+[project]
+name = "tempo-tb-ingest"
+version = "0.1.0"
+description = "Automated BLE harvesting of Tempo-BT skydiving logs for tempo-testbed"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.7",
+    "aiohttp>=3.9",
+    "smpclient>=4.0",
+    "bleak>=0.22",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+tempo-tb-ingest = "tempo_tb_ingest.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tempo_tb_ingest"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "live: requires a live Tempo-BT device in BLE range (read-only)",
+    "destructive: requires the dev device with a testok-marked SD card",
+]
+# hardware tiers are opt-in: `make live` / `make destructive`
+addopts = "-m 'not live and not destructive'"
+
+[tool.ruff]
+line-length = 99
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["smpclient.*", "smp.*", "bleak.*"]
+ignore_missing_imports = true

@@ -1,0 +1,9 @@
+{
+  "data": {
+    "reason": "org.bluez.Error.NotReady"
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "scanner.degraded",
+  "v": 1
+}

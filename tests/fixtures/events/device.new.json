@@ -1,0 +1,12 @@
+{
+  "data": {
+    "id": "0002",
+    "mac": "C8:43:CA:EB:FE:6D",
+    "name": "Tempo-BT-0002",
+    "rssi": -71
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "device.new",
+  "v": 1
+}

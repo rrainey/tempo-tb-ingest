@@ -1,0 +1,10 @@
+{
+  "data": {
+    "mac": "F0:11:22:33:44:55",
+    "name": "Tempo-BT"
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "device.provisioning_needed",
+  "v": 1
+}

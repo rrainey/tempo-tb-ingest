@@ -1,0 +1,14 @@
+{
+  "data": {
+    "id": "0001",
+    "jumper": "riley",
+    "path": "TempoBT-0001/logs/20260705/1CDD8C18/flight.txt",
+    "session_key": "20260705/1CDD8C18",
+    "sha256": "3dea28ef25f25f42ca7ba484b239b377c6d47d7fd46c0e108cd08937f03de858",
+    "size": 2922782
+  },
+  "seq": 42,
+  "ts": "2026-07-08T17:03:22.114Z",
+  "type": "store.session_added",
+  "v": 1
+}
