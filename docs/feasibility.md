@@ -395,6 +395,26 @@ and an independent clean re-download.
 A 1,269-event live recording from the read-only pass is preserved as
 `tests/fixtures/live-harvest-20260708.jsonl` (dashboard development input).
 
+### Implementation step 13 — 2026-07-08 (promote: grouping + proposals)
+
+- **Parser port**: `flightinfo.py` matches `flight-info.sh` to the millisecond on all
+  real-log truths, plus exit GPS positions. Real-data discovery: **V110 logs carry no
+  `$GNRMC`** (no GNSS date) — exits are anchored via the session-key date fallback.
+- **Golden grouping test**: the raw multi-device 20260206 logs (3 devices, 7 sessions)
+  reproduce the three hand-built formations of test-data cases 02/03/04 exactly, with
+  the default window (120 s) and GPS threshold (500 m) — settling design open
+  question #5 empirically.
+- **Live proposal** (scratch store from step 12, real registry): `--reattribute`
+  bound 14 rebuild-indexed sessions live; the proposal produced
+  `13-formation-20260705-2way` — riley `00BAF6AB` (exit 15:22:59.449Z) + scott_z
+  `089D3D65` (exit 15:22:58.125Z, **base = load organizer**) — plus riley's 13:56
+  solo, 11 single-device solos from earlier jump days, and 13 no-exit sessions
+  correctly held for operator judgment. Confirmation prompt honored (`n` → nothing
+  applied).
+
+v1 gap noted: proposal application is all-or-nothing (no per-case selection yet);
+design §3.11 allows editing/excluding — CLI selection flags deferred.
+
 ## Roadmap
 
 1. **v1 daemon (Radio Option 1, Option A stack):** scanner + return detector + single
