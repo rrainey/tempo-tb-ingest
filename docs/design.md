@@ -104,9 +104,11 @@ Two seams make the system testable without radios (V&V requirement, CLAUDE.md):
 - Restart-on-failure: if BlueZ discovery dies (D-Bus error, adapter reset), back off
   (1 s → 30 s cap), re-create the scanner, emit `scanner.degraded` /
   `scanner.recovered` events. The daemon never exits because scanning broke.
-- Single-adapter mode (v1): the harvest worker holds a `radio` asyncio lock; the
-  scanner is stopped while a connection is active and restarted after (BlueZ would
-  pause it anyway; doing it explicitly makes state visible and evented).
+- Single-adapter mode (v1): the harvest worker holds a radio gate that **pauses the
+  scanner for the duration of each connection** and resumes it after. This is
+  mandatory, not hygiene: BlueZ rejects connect attempts outright while discovery is
+  active (`org.bluez.Error.InProgress` — validated live 2026-07-08). Pause/resume is
+  not an outage and emits no degraded/recovered events.
 
 ### 3.3 Device identity
 
@@ -475,7 +477,8 @@ in both snapshot and envelope. Additive changes only within v1; removals/renames
     "id": "0001", "name": "Tempo-BT-0001", "folder": "TempoBT-0001",
     "mac": "DC:BD:F1:0D:F1:D9", "jumper": "riley", "is_lo": true,
     "state": "PRESENT", "rssi": -58, "last_seen": "…", "away_since": null,
-    "sessions_known": 26, "provisioning_needed": false, "truncated": false
+    "sessions_known": 26, "pending_download": 0,
+    "provisioning_needed": false, "conflicted": false, "truncated": false
   }],
   "queue": [ { "id": "…", "queued_at": "…" } ],
   "active_job": {
@@ -483,9 +486,20 @@ in both snapshot and envelope. Additive changes only within v1; removals/renames
     "session_key": "20260708/1A2B3C4D", "file_index": 2, "file_total": 3,
     "bytes_done": 1310720, "bytes_total": 2875691, "rate_bps": 43000
   },
-  "totals": { "sessions_stored": 29, "bytes_stored": 88342511, "harvests_completed": 7, "failures": 1 }
+  "totals": { "sessions_stored": 29, "bytes_stored": 88342511,
+              "pending_download": 0, "harvests_completed": 7, "failures": 1 }
 }
 ```
+
+Dashboard-driven additions (2026-07-09, additive; populated by the step-17
+data-layer work — see `docs/dashboard-notes.md`):
+
+- `conflicted` per device (identity-conflict glyph).
+- `pending_download` per device and in `totals`: sessions discovered on the
+  device (last `session_list.new_count`) minus commits since — usually 0,
+  nonzero during an active harvest or after a failed one.
+- `jumper` is resolved from the ownership registry directly (immediate on first
+  sighting), not only from harvest-time attribution.
 
 `active_job` is `null` when idle; becomes a list if/when multi-adapter lands (the
 dashboard should treat it as `0..n`).
@@ -548,10 +562,17 @@ storage.
   frozen).
 - **Dev/demo mode**: runs identically against `replay` (§3.8) — the visual design
   work needs no hardware present.
-- **Content** (minimum, pending the visual-design document): device roster with
-  presence states and RSSI, the return/harvest activity as animated interactions
-  between device and host, active transfer progress with rates, recent-harvest feed,
-  totals, and sticky warnings (`truncated`, provisioning-needed, scanner degraded).
+- **Concept** (agreed 2026-07-09; full brainstorm in `docs/dashboard-notes.md`,
+  visual-design document to follow): a dark, monochrome-green diorama of the
+  dropzone. AWAY devices float above an "in the sky" line with away timers;
+  visible devices sit in three RSSI tiers (EMA-smoothed with hysteresis, strongest
+  at the bottom) as rounded-rect cards showing device index + jumper name and a
+  jumps-collected badge; active transfers animate as an accent-colored bit stream
+  (speed ∝ `rate_bps`) between device and base box; stats panel lower-right
+  ("pending download" = discovered-not-yet-downloaded), event/history log, warning
+  glyphs with a Help/Legend popup, unprovisioned devices dashed + "!!". A kebab
+  context menu (reboot / identify / rename) is future work requiring v2 control
+  endpoints.
 
 ## 8. Dependencies
 
@@ -582,8 +603,11 @@ Each milestone has explicit verification before the next begins (V&V approach).
 1. ~~`testok` probe mechanics over SMP~~ — **resolved 2026-07-08** (§4): marker is a
    root *file* `/SD:/testok`, probed with the stock fs STATUS command; all three
    response classes verified on live firmware.
-2. Exact `fs download` failure semantics in `smpclient` on radio drop (exception
-   surface, partial-sink state) — characterize at M1, encode in `fake_link` faults.
+2. ~~Exact `fs download` failure semantics in `smpclient` on radio drop~~ —
+   **resolved 2026-07-08** (step 7, destructive tier): a link drop raises
+   `smpclient.transport.SMPTransportDisconnected`; the sink retains a byte-exact,
+   chunk-aligned prefix; offset-resume completes byte-identically. Encoded in
+   `smp_link`'s mapping and `fake_link`'s fault catalog.
 3. ~~Whether BlueZ requires explicit scanner stop during connect~~ — **resolved
    2026-07-08, live**: it does (`org.bluez.Error.InProgress` on every connect
    attempt while discovery ran). The harvest worker's radio gate pauses the
@@ -591,9 +615,11 @@ Each milestone has explicit verification before the next begins (V&V approach).
    pause/resume is not an outage and emits no degraded/recovered events.
 4. Unprovisioned-device operator flow (currently: surface only) — revisit after
    field trial.
-5. Formation-grouping GPS cross-check metric (§3.11): exact definition (separation
-   at exit vs. mean during freefall) and the `gps_max_separation_m` default — settle
-   empirically against the existing multi-device logs in `device-data/` (three
-   devices, same formations, ground truth known) during the promote implementation
-   step.
-6. Dashboard visual design — forthcoming document (owner: Riley).
+5. ~~Formation-grouping GPS cross-check metric~~ — **resolved 2026-07-08**
+   (step 13): metric is horizontal separation of *exit positions* (the GGA current
+   at each session's exit event); `gps_max_separation_m = 500` validated by the
+   golden test reproducing the hand-built 20260206 formations, and by the real
+   20260705 2-way (exits ~40 m apart vs. the same-day solo ~800 m away).
+6. Dashboard visual design — concept and decisions agreed 2026-07-09
+   (`docs/dashboard-notes.md`); the visual-design document (look, motion,
+   typography) remains forthcoming (owner: Riley) and gates step 18.

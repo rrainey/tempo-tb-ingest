@@ -5,6 +5,27 @@ start point, and testable success. The automated test suite accumulates step by 
 everything added stays in the permanent regression body and must remain green for
 every subsequent step.*
 
+## Status — 2026-07-09
+
+**Steps 1–15 complete**, each live-validated where marked 👤 (results in
+`docs/feasibility.md` validation history). Offline gate: 260 tests. Notable
+divergences discovered by real data/hardware and folded back into design + tests:
+
+- **Step 12**: a real 0-byte session (`19700101/…` boot artifact) forced a worker
+  change — bad sessions are skipped loudly, never abort the harvest (design §5
+  updated).
+- **Step 13**: V110-era logs carry no `$GNRMC` — exit UTC anchors on the
+  session-key date as fallback. GPS grouping threshold (500 m) settled by the
+  golden test (design open question #5 resolved).
+- **Step 14**: WS protocol strengthened to a **snapshot-first frame** (design §3.7
+  amended) — the snapshot/stream race is structurally impossible.
+- **Step 15**: BlueZ rejects connections during discovery
+  (`org.bluez.Error.InProgress`) — the worker's radio gate now pauses/resumes the
+  scanner per connection (design §3.2 and open question #3 updated).
+
+Remaining: step 16 (👤 field), step 17 (offline), step 18 (👤 gated on the
+visual-design document; concept agreed in `docs/dashboard-notes.md`).
+
 ## Ground rules
 
 - **A step is done when its exit criteria pass — never before, and no step starts
@@ -26,26 +47,27 @@ every subsequent step.*
 
 ## Step overview
 
-| # | Phase | Step | Success is shown by |
-|---|-------|------|---------------------|
-| 1 | Foundation | Scaffold & toolchain | `make check` green on empty package |
-| 2 | Foundation | Config module | unit tests |
-| 3 | Foundation | Event model & bus | unit tests + golden schema fixtures |
-| 4 | Foundation | Recorder & replay | round-trip tests + checked-in fixture |
-| 5 | Protocol | Group-64 messages, `TempoDeviceLink`, `fake_link` | contract tests vs fake |
-| 6 | Protocol | `smp_link` (real BLE) | contract tests vs live device 👤 (read-only) |
-| 7 | Protocol | Fault characterization on hardware 👤 | fault catalog encoded in `fake_link` + resume test |
-| 8 | Sensing | Scanner / `AdvertisementSource` | unit + live scan smoke 👤 |
-| 9 | Sensing | Presence & return state machine | exhaustive unit tests (simulated clock); bench validation 👤 |
-| 10 | Harvest | Store, session index & ownership registry | unit/integration on tmp trees |
-| 11 | Harvest | Harvest worker end-to-end vs fakes | integration incl. fault scenarios |
-| 12 | Harvest | Live harvest validation 👤 (read-only, then destructive) | byte-identity acceptance; resume on real interruption |
-| 13 | Harvest | `promote`: grouping, attribution, proposals | golden proposals vs real multi-device logs; user review 👤 |
-| 14 | Service | HTTP API: `/state`, `/events`, `/healthz` | WS contract tests, replay-driven |
-| 15 | Service | Daemon assembly & CLI | full-loop integration vs fakes; clean-shutdown test |
-| 16 | Service | Deployment & field soak 👤 | validation checklist at the dropzone |
-| 17 | Dashboard | App scaffold & data layer | vitest on client logic; replay-driven demo |
-| 18 | Dashboard | Visual implementation (per forthcoming design doc) | user review 👤 + kiosk soak |
+| # | Phase | Step | Success is shown by | Status |
+|---|-------|------|---------------------|--------|
+| 1 | Foundation | Scaffold & toolchain | `make check` green on empty package | ✅ 07-08 |
+| 2 | Foundation | Config module | unit tests | ✅ 07-08 |
+| 3 | Foundation | Event model & bus | unit tests + golden schema fixtures | ✅ 07-08 |
+| 4 | Foundation | Recorder & replay | round-trip tests + checked-in fixture | ✅ 07-08 |
+| 5 | Protocol | Group-64 messages, `TempoDeviceLink`, `fake_link` | contract tests vs fake | ✅ 07-08 |
+| 6 | Protocol | `smp_link` (real BLE) | contract tests vs live device 👤 (read-only) | ✅ 07-08 |
+| 7 | Protocol | Fault characterization on hardware 👤 | fault catalog encoded in `fake_link` + resume test | ✅ 07-08 |
+| 8 | Sensing | Scanner / `AdvertisementSource` | unit + live scan smoke 👤 | ✅ 07-08 |
+| 9 | Sensing | Presence & return state machine | exhaustive unit tests (simulated clock); bench validation 👤 | ✅ 07-08 |
+| 10 | Harvest | Store, session index & ownership registry | unit/integration on tmp trees | ✅ 07-08 |
+| 11 | Harvest | Harvest worker end-to-end vs fakes | integration incl. fault scenarios | ✅ 07-08 |
+| 12 | Harvest | Live harvest validation 👤 (read-only, then destructive) | byte-identity acceptance; resume on real interruption | ✅ 07-08 |
+| 13 | Harvest | `promote`: grouping, attribution, proposals | golden proposals vs real multi-device logs; user review 👤 | ✅ 07-08 |
+| 14 | Service | HTTP API: `/state`, `/events`, `/healthz` | WS contract tests, replay-driven | ✅ 07-08 |
+| 15 | Service | Daemon assembly & CLI | full-loop integration vs fakes; clean-shutdown test; live daemon run 👤 | ✅ 07-08 |
+| 16 | Service | Deployment & field soak 👤 | validation checklist at the dropzone | — |
+| 17 | Dashboard | App scaffold & data layer (+ daemon snapshot additions) | vitest on client logic; replay-driven demo | — |
+| 18 | Dashboard | Visual implementation (per forthcoming design doc) | user review 👤 + kiosk soak | — |
+| 19 | Portability | Windows laptop deployment (daemon + dashboard + testbed) | W0–W3 stages per `docs/windows-options.md` 👤 | — |
 
 👤 = requires user participation / hardware in range.
 
@@ -285,19 +307,29 @@ every subsequent step.*
 
 ### Step 17 — Dashboard scaffold & data layer
 - **Start point**: Step 14 done (replay + API are its complete dev environment; no
-  hardware ever needed).
-- **Objective**: `dashboard/` Vite + React + TS scaffold; snapshot-then-stream
-  client (reconnect, re-snapshot on `daemon.started`, stale indicator); typed event
-  models generated/mirrored from the §6 contract; a minimal state view proving the
-  pipe (device roster + raw event feed).
+  hardware ever needed). Concept inputs: `docs/dashboard-notes.md` (2026-07-09).
+- **Objective**: `dashboard/` Vite + React + TS scaffold; snapshot-first WS client
+  (reconnect, re-snapshot on `daemon.started`, unmissable stale treatment); typed
+  event models mirrored from the §6 contract; the **view-model layer the agreed
+  concept needs**: per-device smoothed RSSI tier (EMA ~5 s + ~4 dBm hysteresis),
+  away timers, transfer state (direction + rate for the bit animation), jumps-
+  collected badge counts, warning flags, "seen today" scoping, event-ticker feed;
+  a minimal unstyled state view proving the pipe (device roster + raw event feed).
+  **Plus the daemon-side snapshot additions** from dashboard-notes: per-device and
+  total `pending_download`, `conflicted` in the documented example, and `jumper`
+  resolved from the owners registry on first sighting.
 - **Verification (tests added)**: vitest on the client reducer: fixture replay in →
-  expected view-model out; reconnect logic; stale detection. Build artifact served
-  by the daemon (`GET /` integration test).
+  expected view-model out (incl. tier hysteresis and away-timer derivation);
+  reconnect logic; stale detection. Python side: statefold/daemon snapshot tests
+  extended for `pending_download` and registry-resolved `jumper`; golden `/state`
+  fixture regenerated deliberately. Build artifact served by the daemon
+  (`GET /` integration test).
 - **Exit**: `replay --loop` + browser shows live-updating roster; tests green.
 
 ### Step 18 — Dashboard visual implementation 👤
 - **Start point**: Step 17 done **and** the user's dashboard visual-design document
-  exists.
+  exists (concept and decisions already agreed in `docs/dashboard-notes.md`; the
+  design doc owns look, motion, and typography).
 - **Objective**: the full-screen, graphics-design-oriented visualization per that
   document, driven purely by the §6 contract.
 - **Verification**: reducer/view-model tests extended for each new visual state;
@@ -305,6 +337,28 @@ every subsequent step.*
 - **Validation**: user design review against replay-driven demo scenarios; kiosk
   soak (24 h, no leaks/stalls, stale indicator behaves on daemon restart).
 - **Exit**: user sign-off; demo replay reproducible on any machine with a browser.
+
+## Phase G — Portability
+
+### Step 19 — Windows laptop deployment 👤
+- **Start point**: Step 16 done (the Linux deployment is the reference
+  behavior); options study `docs/windows-options.md` reviewed.
+- **Objective**: run daemon + dashboard + tempo-testbed together on a Windows
+  laptop. Primary approach: **Option A — daemon native on Windows** (bleak
+  WinRT backend). Portability work: platform shim for the single-instance
+  lock (`fcntl` → `msvcrt`/portalocker), Windows-safe signal handling,
+  optional `[adapter] scan` (None = platform default), Windows config paths,
+  service wrapper (NSSM or Task Scheduler), kiosk power-management checklist.
+  Fallback (decision gate after W1): **Option B — WSL2 + usbipd-win** with the
+  unchanged Linux stack. Docker is used, at most, for the testbed only.
+- **Verification**: stage **W0** — the full offline gate passes on Windows.
+- **Validation 👤**: stages **W1–W3** per the options study: live contract
+  tier on the laptop (WinRT scan-response names, byte-identity), live daemon
+  soak (noting whether WinRT also requires the scanner pause), and a full
+  three-component jump-day rehearsal with a promote into `test-data\`.
+  Results appended to the feasibility validation history.
+- **Exit**: laptop runs all three components through a rehearsal day; chosen
+  option and any WinRT findings recorded in `docs/windows-options.md`.
 
 ---
 
