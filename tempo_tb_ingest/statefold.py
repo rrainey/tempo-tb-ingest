@@ -71,6 +71,7 @@ class StateFold:
                 "last_seen": None,
                 "away_since": None,
                 "sessions_known": 0,
+                "pending_download": 0,
                 "provisioning_needed": False,
                 "conflicted": False,
                 "truncated": False,
@@ -160,6 +161,9 @@ class StateFold:
     def _on_harvest_session_list(self, data: dict[str, Any], env: Envelope) -> None:
         if self._active_job is not None and self._active_job["id"] == data["id"]:
             self._active_job["state"] = "ENUMERATING"
+        # discovered-but-not-downloaded; decremented per store.session_added,
+        # so it lingers (correctly) after a failed harvest
+        self._device(data["id"])["pending_download"] = data["new_count"]
 
     def _on_harvest_truncated(self, data: dict[str, Any], env: Envelope) -> None:
         self._device(data["id"])["truncated"] = True
@@ -192,6 +196,7 @@ class StateFold:
         self._totals["bytes_stored"] += data["size"]
         record = self._device(data["id"])
         record["sessions_known"] += 1
+        record["pending_download"] = max(0, record["pending_download"] - 1)
         if data.get("jumper"):
             record["jumper"] = data["jumper"]
 
@@ -210,6 +215,8 @@ class StateFold:
     def snapshot(self, *, now: datetime | None = None) -> dict[str, Any]:
         """The §6.1 wire structure (v/seq/ts + sections)."""
         ts = now or self.last_ts
+        totals = dict(self._totals)
+        totals["pending_download"] = sum(d["pending_download"] for d in self._devices.values())
         return {
             "v": 1,
             "seq": self.last_seq,
@@ -225,5 +232,5 @@ class StateFold:
             + sorted(self._unprovisioned.values(), key=lambda d: d["mac"]),
             "queue": list(self._queue),
             "active_job": dict(self._active_job) if self._active_job else None,
-            "totals": dict(self._totals),
+            "totals": totals,
         }

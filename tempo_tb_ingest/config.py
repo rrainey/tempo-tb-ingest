@@ -101,6 +101,7 @@ class DropzoneConfig(_Section):
 
 class HttpConfig(_Section):
     listen: str = "127.0.0.1:8080"
+    static_dir: Path | None = None  # built dashboard (dashboard/dist); None = API only
 
     @field_validator("listen")
     @classmethod

@@ -1,0 +1,24 @@
+# tempo-tb-ingest daemon — systemd unit (design §3.10)
+#
+# Written for the current workstation (user riley, repo checkout paths);
+# adjust User/paths for other hosts — see deploy/README.md.
+
+[Unit]
+Description=Tempo-BT log ingestion daemon (BLE harvest + dashboard)
+Documentation=file:///home/riley/src/tempo-tb-ingest/docs/design.md
+After=bluetooth.service network.target
+Wants=bluetooth.service
+
+[Service]
+Type=notify
+ExecStart=/home/riley/src/tempo-tb-ingest/.venv/bin/tempo-tb-ingest daemon --config /etc/tempo-tb-ingest.toml
+User=riley
+Group=riley
+Restart=on-failure
+RestartSec=5
+# daemon feeds WATCHDOG=1 every 5 s from its sweep loop
+WatchdogSec=60
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

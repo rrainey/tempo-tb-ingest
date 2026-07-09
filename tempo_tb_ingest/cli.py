@@ -136,6 +136,10 @@ def replay(
         str | None,
         typer.Option(help="Serve the API/dashboard from the replay, e.g. 127.0.0.1:8080"),
     ] = None,
+    static: Annotated[
+        Path | None,
+        typer.Option(help="Static dashboard build to serve at / (e.g. dashboard/dist)"),
+    ] = None,
 ) -> None:
     """Re-publish a recorded event stream (console, and optionally the API)."""
     import asyncio
@@ -167,7 +171,7 @@ def replay(
 
             fold_task = asyncio.create_task(fold_pump())
             host, _, port = listen.rpartition(":")
-            app_ = create_app(bus, fold.snapshot)
+            app_ = create_app(bus, fold.snapshot, static_dir=static)
             runner = await serve(app_, host or "127.0.0.1", int(port))
             typer.echo(f"replay: serving API on http://{listen}")
 

@@ -11,15 +11,17 @@ config, so the whole daemon runs against fakes in tests. Guarantees:
   store session counts) with event-derived dynamics (queue/active job/totals
   from a StateFold) — one coherent §6.1 structure.
 
-The scanner keeps running during transfers in v1: BlueZ merges discovery
-sessions, and bleak's connect path scans anyway. Field-trial telemetry
-(step 16) revisits this if link reliability suffers.
+The scanner is paused for the duration of each connection
+(ScannerPausingRadioGate): BlueZ refuses connects while discovery is active
+(org.bluez.Error.InProgress, observed live 2026-07-08).
 """
 
 import asyncio
 import contextlib
 import fcntl
 import logging
+import os
+import socket
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import IO, Any
@@ -39,6 +41,20 @@ from tempo_tb_ingest.store import Store
 logger = logging.getLogger(__name__)
 
 SWEEP_INTERVAL_S = 5.0
+
+
+def sd_notify(message: str) -> None:
+    """Minimal systemd notify (Type=notify readiness + watchdog feeding).
+
+    No-op unless systemd provided NOTIFY_SOCKET; stdlib only."""
+    path = os.environ.get("NOTIFY_SOCKET")
+    if not path:
+        return
+    if path.startswith("@"):
+        path = "\0" + path[1:]
+    with contextlib.suppress(OSError), socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+        sock.connect(path)
+        sock.send(message.encode())
 
 
 class AlreadyRunning(Exception):
@@ -148,19 +164,23 @@ class Daemon:
             folded_dev: dict[str, Any] = next(
                 (d for d in folded["devices"] if d["id"] == record.id), {}
             )
+            # jumper labels are immediate: the registry knows who wears the
+            # device from first sighting (dashboard-notes); fold is fallback
+            owner = self.owners.lookup(record.id)
             devices.append(
                 {
                     "id": record.id,
                     "name": record.name,
                     "folder": f"TempoBT-{record.id}",
                     "mac": record.mac,
-                    "jumper": folded_dev.get("jumper"),
-                    "is_lo": folded_dev.get("is_lo", False),
+                    "jumper": owner.jumper_name if owner else folded_dev.get("jumper"),
+                    "is_lo": owner.is_load_organizer if owner else folded_dev.get("is_lo", False),
                     "state": record.state.value,
                     "rssi": record.rssi,
                     "last_seen": record.last_seen.isoformat(),
                     "away_since": (record.away_since.isoformat() if record.away_since else None),
                     "sessions_known": len(self.store.known_sessions(record.id)),
+                    "pending_download": folded_dev.get("pending_download", 0),
                     "provisioning_needed": False,
                     "conflicted": record.conflicted,
                     "truncated": folded_dev.get("truncated", False),
@@ -223,7 +243,7 @@ class Daemon:
             )
             from tempo_tb_ingest.api import create_app, serve
 
-            app = create_app(self.bus, self.snapshot)
+            app = create_app(self.bus, self.snapshot, static_dir=self.config.http.static_dir)
             runner = await serve(app, self.config.http.host, self.config.http.port)
 
             # the recorder is not in _tasks: it must never be cancelled —
@@ -237,8 +257,10 @@ class Daemon:
                 asyncio.create_task(self._pump_fold(), name="fold"),
                 asyncio.create_task(self._sweep_loop(), name="sweep"),
             ]
+            sd_notify("READY=1")
             await self._stopping.wait()
         finally:
+            sd_notify("STOPPING=1")
             await self._shutdown(runner)
 
     def stop(self, reason: str = "shutdown requested") -> None:
@@ -287,3 +309,4 @@ class Daemon:
         while True:
             await asyncio.sleep(SWEEP_INTERVAL_S)
             self.presence.sweep(self._clock())
+            sd_notify("WATCHDOG=1")  # every 5 s against WatchdogSec=60

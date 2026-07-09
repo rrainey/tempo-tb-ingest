@@ -169,6 +169,28 @@ class TestDaemonStory:
         # the spool file exists (possibly zero bytes yet); resume-ready
         assert spool.exists()
 
+    def test_sd_notify_sends_when_socket_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import socket
+
+        from tempo_tb_ingest.daemon import sd_notify
+
+        sock_path = str(tmp_path / "notify.sock")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        server.bind(sock_path)
+        server.settimeout(2)
+        monkeypatch.setenv("NOTIFY_SOCKET", sock_path)
+        sd_notify("READY=1")
+        assert server.recv(64) == b"READY=1"
+        server.close()
+
+    def test_sd_notify_noop_without_socket(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from tempo_tb_ingest.daemon import sd_notify
+
+        monkeypatch.delenv("NOTIFY_SOCKET", raising=False)
+        sd_notify("READY=1")  # must not raise
+
     async def test_healthz_and_ws_serve_live(self, tmp_path: Path, port: int) -> None:
         config = make_config(tmp_path, port)
         fake = FakeLink(sessions={})

@@ -42,6 +42,7 @@ timezone = "America/Chicago"
 
 [http]
 listen = "127.0.0.1:8080"
+# static_dir = "dashboard/dist"  # built dashboard served at /; unset = API only
 
 [log]
 level = "info"           # structured JSON logs to stdout (journald)

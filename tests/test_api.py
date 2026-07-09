@@ -69,16 +69,42 @@ class TestHttp:
         assert snapshot["totals"] == {
             "sessions_stored": 3,
             "bytes_stored": 2922782 + 2875691 + 3100000,
+            "pending_download": 0,  # everything discovered was downloaded
             "harvests_completed": 2,
             "failures": 1,
         }
         devices = {d["id"]: d for d in snapshot["devices"]}
         assert devices["0001"]["sessions_known"] == 3
+        assert devices["0001"]["pending_download"] == 0
         assert devices["0001"]["jumper"] == "riley"
         assert devices["0001"]["state"] == "PRESENT"
         assert snapshot["active_job"] is None
         assert snapshot["queue"] == []
         assert snapshot["daemon"]["scanning"] is False  # daemon.stopping was replayed
+
+    async def test_pending_download_lingers_after_failure(self) -> None:
+        """Discovered-but-not-downloaded persists across a failed harvest —
+        exactly when the stat matters (dashboard-notes semantics)."""
+        fold = StateFold()
+        bus = ev.EventBus()
+        for data in (
+            ev.HarvestStarted(id="0001", attempt=1),
+            ev.HarvestSessionList(id="0001", count=5, new_count=2, truncated=False),
+            ev.StoreSessionAdded(
+                id="0001",
+                session_key="20260709/AAAAAAAA",
+                path="x",
+                size=10,
+                sha256="0" * 64,
+                jumper=None,
+            ),
+            ev.HarvestFailed(id="0001", reason="disconnected", attempt=1, will_retry=True),
+        ):
+            fold.apply(bus.publish(data))
+        snapshot = fold.snapshot()
+        devices = {d["id"]: d for d in snapshot["devices"]}
+        assert devices["0001"]["pending_download"] == 1  # one still on the device
+        assert snapshot["totals"]["pending_download"] == 1
 
     async def test_static_serving(self, tmp_path: Path) -> None:
         (tmp_path / "index.html").write_text("<title>tempo</title>")

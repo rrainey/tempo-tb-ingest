@@ -64,8 +64,8 @@ visual-design document; concept agreed in `docs/dashboard-notes.md`).
 | 13 | Harvest | `promote`: grouping, attribution, proposals | golden proposals vs real multi-device logs; user review 👤 | ✅ 07-08 |
 | 14 | Service | HTTP API: `/state`, `/events`, `/healthz` | WS contract tests, replay-driven | ✅ 07-08 |
 | 15 | Service | Daemon assembly & CLI | full-loop integration vs fakes; clean-shutdown test; live daemon run 👤 | ✅ 07-08 |
-| 16 | Service | Deployment & field soak 👤 | validation checklist at the dropzone | — |
-| 17 | Dashboard | App scaffold & data layer (+ daemon snapshot additions) | vitest on client logic; replay-driven demo | — |
+| 16 | Service | Deployment & field soak 👤 | validation checklist at the dropzone | unit+watchdog ✅ 07-09; soak 👤 pending |
+| 17 | Dashboard | App scaffold & data layer (+ daemon snapshot additions) | vitest on client logic; replay-driven demo | ✅ 07-09 |
 | 18 | Dashboard | Visual implementation (per forthcoming design doc) | user review 👤 + kiosk soak | — |
 | 19 | Portability | Windows laptop deployment (daemon + dashboard + testbed) | W0–W3 stages per `docs/windows-options.md` 👤 | — |
 

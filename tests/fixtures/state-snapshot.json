@@ -23,6 +23,7 @@
       "last_seen": "2026-07-08T14:14:12.000Z",
       "mac": "AA:0B:F1:0D:22:33",
       "name": "Tempo-BT-0001",
+      "pending_download": 0,
       "provisioning_needed": false,
       "rssi": -55,
       "sessions_known": 3,
@@ -36,6 +37,7 @@
     "bytes_stored": 8898473,
     "failures": 1,
     "harvests_completed": 2,
+    "pending_download": 0,
     "sessions_stored": 3
   },
   "ts": "2026-07-08T14:15:42.000Z",
