@@ -256,10 +256,15 @@ receive a `stream.gap` marker — the daemon never blocks on a viewer).
 aiohttp application on `http.listen` (default `127.0.0.1:8080`; LAN exposure is a
 config decision):
 
-- `GET /state` — full snapshot (§6.1), including `seq` of the last event applied.
-- `GET /events` (WebSocket) — envelope-framed live events (§6.2). Client protocol:
-  fetch `/state`, open WS, apply events with `seq >` snapshot's. On WS drop:
-  reconnect and re-snapshot (no server-side backfill in v1 — snapshot is cheap).
+- `GET /state` — full snapshot (§6.1), including `seq` of the last event applied
+  (polling/diagnostics).
+- `GET /events` (WebSocket) — **the first frame is a snapshot**
+  (`{"kind":"snapshot","state":{…}}`), taken after the server subscribes to the
+  bus, followed by `{"kind":"event","event":{…}}` frames with `seq >` the
+  snapshot's — so the snapshot/stream gap race is structurally impossible
+  (amended 2026-07-08 from the original fetch-then-connect protocol, which was
+  racy). On WS drop: reconnect; the fresh snapshot re-anchors (no server-side
+  backfill in v1).
 - `GET /healthz` — liveness for systemd watchdog / monitoring.
 - `GET /` + static assets — the built dashboard (`dashboard/dist/`).
 
@@ -579,8 +584,11 @@ Each milestone has explicit verification before the next begins (V&V approach).
    response classes verified on live firmware.
 2. Exact `fs download` failure semantics in `smpclient` on radio drop (exception
    surface, partial-sink state) — characterize at M1, encode in `fake_link` faults.
-3. Whether BlueZ requires explicit scanner stop during connect on the target
-   workstation hardware, or handles it internally (§3.2) — measure at M2.
+3. ~~Whether BlueZ requires explicit scanner stop during connect~~ — **resolved
+   2026-07-08, live**: it does (`org.bluez.Error.InProgress` on every connect
+   attempt while discovery ran). The harvest worker's radio gate pauses the
+   scanner for the duration of each connection (`ScannerPausingRadioGate`);
+   pause/resume is not an outage and emits no degraded/recovered events.
 4. Unprovisioned-device operator flow (currently: surface only) — revisit after
    field trial.
 5. Formation-grouping GPS cross-check metric (§3.11): exact definition (separation

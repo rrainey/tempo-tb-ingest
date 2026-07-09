@@ -31,8 +31,9 @@ def test_cli_version_exits_zero() -> None:
     assert tempo_tb_ingest.__version__ in result.stdout
 
 
-def test_unimplemented_commands_fail_loudly() -> None:
-    # placeholders must not pretend to succeed (no-silent-success rule)
-    result = _run_cli("daemon")
-    assert result.returncode == 2, "daemon should exit 2 until implemented"
-    assert "not implemented" in result.stderr
+def test_daemon_fails_loudly_on_bad_config() -> None:
+    # errors must be clean messages with nonzero exit, never tracebacks
+    result = _run_cli("daemon", "--config", "/nonexistent/config.toml")
+    assert result.returncode == 1
+    assert "not found" in result.stderr
+    assert "Traceback" not in result.stderr

@@ -103,6 +103,11 @@ class Scanner:
         self._backoff_max_s = backoff_max_s
         self._sleep = sleep
         self._stop = asyncio.Event()
+        self._paused = False
+        self._resume = asyncio.Event()
+        self._session_stop: asyncio.Event | None = None
+        self._idle = asyncio.Event()  # set whenever no scan session is active
+        self._idle.set()
         self.dropped = 0  # sightings shed on overflow (periodic data; safe to shed)
 
     # -- producing ----------------------------------------------------------
@@ -136,17 +141,47 @@ class Scanner:
                 degraded_since = None
 
         while not self._stop.is_set():
+            if self._paused:
+                await self._resume.wait()
+                continue
+            session_stop = asyncio.Event()
+            self._session_stop = session_stop
+            self._idle.clear()
             try:
-                await self._backend(self._on_raw_detection, self._stop, on_started)
+                await self._backend(self._on_raw_detection, session_stop, on_started)
             except Exception as exc:
                 if degraded_since is None:
                     degraded_since = self._clock()
                 self._bus.publish(ScannerDegraded(reason=f"{type(exc).__name__}: {exc}"))
+                self._idle.set()
                 await self._sleep(backoff)
                 backoff = min(backoff * 2, self._backoff_max_s)
+            else:
+                self._idle.set()
 
     def stop(self) -> None:
         self._stop.set()
+        self._resume.set()
+        if self._session_stop is not None:
+            self._session_stop.set()
+
+    async def pause(self) -> None:
+        """Suspend scanning and wait until the scan session has fully ended.
+
+        BlueZ rejects connections while discovery is active
+        (org.bluez.Error.InProgress — observed live 2026-07-08), so the
+        harvest worker pauses the scanner for the duration of each
+        connection. Not an outage: no degraded/recovered events.
+        """
+        self._paused = True
+        self._resume = asyncio.Event()
+        if self._session_stop is not None:
+            self._session_stop.set()
+        await self._idle.wait()
+
+    def resume(self) -> None:
+        self._paused = False
+        self._resume.set()
 
     # -- consuming ----------------------------------------------------------
 

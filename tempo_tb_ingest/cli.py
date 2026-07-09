@@ -41,8 +41,40 @@ def daemon(
     config: Annotated[Path | None, typer.Option(help="TOML config file")] = None,
 ) -> None:
     """Run the ingestion daemon (scanner, return detector, harvester, API)."""
-    typer.echo(f"daemon: {_NOT_YET}", err=True)
-    raise typer.Exit(code=2)
+    import asyncio
+    import logging
+    import signal
+
+    from tempo_tb_ingest.config import Config, ConfigError
+    from tempo_tb_ingest.daemon import AlreadyRunning, Daemon
+
+    try:
+        cfg = Config.load(config)
+    except ConfigError as exc:
+        typer.echo(f"daemon: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    logging.basicConfig(
+        level=getattr(logging, cfg.log.level.upper()),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    async def run() -> None:
+        instance = Daemon(cfg)
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, instance.stop, f"signal {sig.name}")
+        typer.echo(f"daemon: serving on http://{cfg.http.listen}")
+        await instance.run()
+
+    try:
+        asyncio.run(run())
+    except AlreadyRunning as exc:
+        typer.echo(f"daemon: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    except OSError as exc:
+        typer.echo(f"daemon: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
@@ -100,8 +132,12 @@ def replay(
     recording: Annotated[Path, typer.Argument(help="JSONL event recording")],
     speed: Annotated[float, typer.Option(help="Playback speed multiplier")] = 1.0,
     loop: Annotated[bool, typer.Option(help="Restart at end of file")] = False,
+    listen: Annotated[
+        str | None,
+        typer.Option(help="Serve the API/dashboard from the replay, e.g. 127.0.0.1:8080"),
+    ] = None,
 ) -> None:
-    """Re-publish a recorded event stream (console output; API serving lands in step 14)."""
+    """Re-publish a recorded event stream (console, and optionally the API)."""
     import asyncio
     import json
 
@@ -115,6 +151,25 @@ def replay(
     async def run() -> None:
         bus = EventBus()
         subscription = bus.subscribe()
+        runner = None
+        fold_task = None
+
+        if listen is not None:
+            from tempo_tb_ingest.api import create_app, serve
+            from tempo_tb_ingest.statefold import StateFold
+
+            fold = StateFold()
+            fold_subscription = bus.subscribe()
+
+            async def fold_pump() -> None:
+                async for env in fold_subscription:
+                    fold.apply(env)
+
+            fold_task = asyncio.create_task(fold_pump())
+            host, _, port = listen.rpartition(":")
+            app_ = create_app(bus, fold.snapshot)
+            runner = await serve(app_, host or "127.0.0.1", int(port))
+            typer.echo(f"replay: serving API on http://{listen}")
 
         async def printer() -> None:
             async for env in subscription:
@@ -126,9 +181,16 @@ def replay(
         printer_task = asyncio.create_task(printer())
         try:
             stats = await replay_events(recording, bus, speed=speed, loop=loop)
+            if listen is not None:
+                typer.echo("replay: finished; serving final state (Ctrl-C to exit)")
+                await asyncio.Event().wait()
         finally:
             bus.close()
             await printer_task
+            if fold_task is not None:
+                await fold_task
+            if runner is not None:
+                await runner.cleanup()
         if stats.skipped:
             typer.echo(f"replay: skipped {stats.skipped} malformed line(s)", err=True)
 

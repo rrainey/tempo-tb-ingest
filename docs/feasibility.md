@@ -415,6 +415,26 @@ A 1,269-event live recording from the read-only pass is preserved as
 v1 gap noted: proposal application is all-or-nothing (no per-case selection yet);
 design §3.11 allows editing/excluding — CLI selection flags deferred.
 
+### Implementation steps 14–15 — 2026-07-08 (API + daemon assembly, live)
+
+- **API (step 14)**: `/state`, `/healthz`, and a WS whose *first frame is a snapshot*
+  taken after subscription — the snapshot/stream race is structurally impossible
+  (design §3.7 amended). Wire format locked by a golden `/state` fixture; replay
+  serves the API indistinguishably from live (verified against the real 1,269-event
+  harvest recording: totals and attribution reproduced exactly).
+- **Daemon (step 15)**: full assembly with single-instance flock, graceful shutdown
+  (recorder drains after bus close; in-flight transfers leave resumable `.part`).
+- **Design open question #3 answered on live hardware, in the negative**: BlueZ
+  refuses connections while discovery runs (`org.bluez.Error.InProgress`, 5/5
+  attempts failed). Fix: the harvest worker's radio gate now **pauses the scanner
+  for each connection** (pause waits for the scan session to fully end; not an
+  outage — no degraded events). With the gate in place, the live daemon: discovered
+  0010 → paused → harvested its 843 KB session (SHA-256 identical to the step-12e
+  reference) → resumed scanning; `failures: 0`.
+- Live lifecycle checks: second instance refused with exit code 3 (lock held by a
+  running daemon); SIGTERM → clean exit in **0.20 s** with `daemon.stopping`
+  recorded and the lock released.
+
 ## Roadmap
 
 1. **v1 daemon (Radio Option 1, Option A stack):** scanner + return detector + single

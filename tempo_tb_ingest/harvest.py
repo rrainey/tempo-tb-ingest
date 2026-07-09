@@ -15,9 +15,10 @@ The worker never writes to a device: the link interface has no write methods
 """
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any, Protocol
 
 from tempo_tb_ingest.device.protocol import (
     ConnectError,
@@ -52,6 +53,18 @@ ResolveTargetFn = Callable[[str], tuple[str, str | None] | None]
 LinkFactoryFn = Callable[[str], TempoDeviceLink]  # address -> link
 
 
+class RadioGate(Protocol):
+    """Async context held for the duration of one connected job.
+
+    ``asyncio.Lock`` suffices when nothing else needs the radio; the daemon
+    supplies a gate that also pauses the scanner (BlueZ refuses connections
+    while discovery is active — org.bluez.Error.InProgress, observed live)."""
+
+    def __aenter__(self) -> Awaitable[Any]: ...
+
+    def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> Awaitable[Any]: ...
+
+
 @dataclass
 class _Pending:
     attempt: int  # attempts used so far this RETURNED cycle
@@ -70,7 +83,7 @@ class HarvestWorker:
         max_attempts: int = 5,
         retry_cooldown_s: float = 15.0,
         progress_interval_s: float = 0.2,  # ≤ 5 Hz per wire contract
-        radio_lock: asyncio.Lock | None = None,
+        radio_lock: RadioGate | None = None,
         clock: Callable[[], datetime] | None = None,
         on_harvested: Callable[[str], None] | None = None,
     ) -> None:
@@ -82,7 +95,7 @@ class HarvestWorker:
         self._max_attempts = max_attempts
         self._retry_cooldown_s = retry_cooldown_s
         self._progress_interval_s = progress_interval_s
-        self._radio_lock = radio_lock or asyncio.Lock()
+        self._radio_lock: RadioGate = radio_lock or asyncio.Lock()
         self._clock = clock or (lambda: datetime.now(UTC))
         self._on_harvested = on_harvested
         self._queue: asyncio.Queue[tuple[str, int]] = asyncio.Queue()

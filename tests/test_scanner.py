@@ -37,12 +37,17 @@ class TestFiltering:
 
 
 class ScriptedBackend:
-    """Deterministic backend: runs scripted actions per session."""
+    """Deterministic backend: runs scripted actions per session.
+
+    ``on_exhausted`` (wired to ``scanner.stop`` by the harness) fires when a
+    session's script runs dry — the backend itself can only end its own
+    session, not the scanner (mirrors the real pause/stop split)."""
 
     def __init__(self) -> None:
         self.sessions = 0
         self.script: list[Callable[[RawDetectionFn], None] | Exception] = []
         self.on_session: Callable[[int], list[Callable[[RawDetectionFn], None] | Exception]]
+        self.on_exhausted: Callable[[], None] = lambda: None
 
     async def __call__(
         self,
@@ -60,7 +65,9 @@ class ScriptedBackend:
                 raise action  # mid-scan failure
             action(detected)
             await asyncio.sleep(0)
-        stop.set()  # script exhausted: end the scan
+        if actions:
+            self.on_exhausted()  # script dry: harness ends the scanner
+        await stop.wait()  # a real backend runs until its session is stopped
 
 
 def tempo_detection(
@@ -89,6 +96,7 @@ class TestScanner:
         async def scenario() -> list[Sighting]:
             bus = ev.EventBus()
             scanner = Scanner(bus, backend, clock=lambda: T0)
+            backend.on_exhausted = scanner.stop
             run = asyncio.create_task(scanner.run())
             got = await collect(scanner)
             await run
@@ -120,6 +128,7 @@ class TestScanner:
             bus = ev.EventBus()
             sub = bus.subscribe()
             scanner = Scanner(bus, backend, clock=clock, sleep=fake_sleep)
+            backend.on_exhausted = scanner.stop
             run = asyncio.create_task(scanner.run())
             got = await collect(scanner)
             await run
@@ -150,6 +159,7 @@ class TestScanner:
         async def scenario() -> None:
             bus = ev.EventBus()
             scanner = Scanner(bus, backend, sleep=fake_sleep, backoff_max_s=10.0)
+            backend.on_exhausted = scanner.stop
             run = asyncio.create_task(scanner.run())
             await collect(scanner)
             await run
@@ -166,6 +176,7 @@ class TestScanner:
         async def scenario() -> tuple[list[Sighting], int]:
             bus = ev.EventBus()
             scanner = Scanner(bus, backend, queue_size=4)
+            backend.on_exhausted = scanner.stop
             run = asyncio.create_task(scanner.run())
             # don't consume until the producer finished: forces overflow
             await run
@@ -175,6 +186,79 @@ class TestScanner:
         got, dropped = asyncio.run(scenario())
         assert dropped == 6
         assert [s.rssi for s in got] == [-6, -7, -8, -9]  # newest kept
+
+
+class ContinuousBackend:
+    """Emits one Tempo advertisement per tick until its session is stopped."""
+
+    def __init__(self) -> None:
+        self.sessions = 0
+        self.active = False
+
+    async def __call__(
+        self,
+        detected: RawDetectionFn,
+        stop: asyncio.Event,
+        started: Callable[[], None],
+    ) -> None:
+        self.sessions += 1
+        self.active = True
+        started()
+        try:
+            while not stop.is_set():
+                detected("AA:BB:CC:DD:EE:FF", "Tempo-BT-0001", -60, [SMP_SERVICE_UUID])
+                await asyncio.sleep(0.001)
+        finally:
+            self.active = False
+
+
+class TestPauseResume:
+    """The daemon pauses scanning during connections (BlueZ InProgress)."""
+
+    def test_pause_ends_session_resume_starts_new_one(self) -> None:
+        async def scenario() -> tuple[int, list[str]]:
+            bus = ev.EventBus()
+            sub = bus.subscribe()
+            backend = ContinuousBackend()
+            scanner = Scanner(bus, backend)
+            run = asyncio.create_task(scanner.run())
+            await asyncio.sleep(0.02)
+            assert backend.active
+
+            await scanner.pause()
+            assert not backend.active  # pause() returns only once truly idle
+            assert backend.sessions == 1
+            await asyncio.sleep(0.02)
+            assert backend.sessions == 1  # stays down while paused
+
+            scanner.resume()
+            await asyncio.sleep(0.02)
+            assert backend.active
+            assert backend.sessions == 2  # a fresh session after resume
+
+            scanner.stop()
+            await run
+            bus.close()
+            return backend.sessions, [e.type async for e in sub]
+
+        sessions, types = asyncio.run(scenario())
+        assert sessions == 2
+        # a pause is not an outage: no degraded/recovered noise
+        assert "scanner.degraded" not in types
+        assert "scanner.recovered" not in types
+
+    def test_stop_while_paused_exits(self) -> None:
+        async def scenario() -> None:
+            bus = ev.EventBus()
+            backend = ContinuousBackend()
+            scanner = Scanner(bus, backend)
+            run = asyncio.create_task(scanner.run())
+            await asyncio.sleep(0.02)
+            await scanner.pause()
+            scanner.stop()
+            await asyncio.wait_for(run, timeout=2)
+
+        asyncio.run(scenario())
 
 
 @pytest.mark.live
