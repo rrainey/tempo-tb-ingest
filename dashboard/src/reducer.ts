@@ -9,8 +9,12 @@
 import type { ActiveJob, Envelope, Snapshot, Totals } from "./contract";
 
 // -- RSSI tiers (dashboard-notes): EMA ~5 s + ~4 dBm hysteresis -------------
+//
+// Boundaries calibrated 2026-07-10 (issue #4) from bench placements:
+// 1 m ≈ -41..-43 dBm median, 3 m ≈ -70..-72 — so "harvest-optimal" (tier 1)
+// reaches to ~-74; tier 2 = elsewhere in the room; tier 3 = edge of range.
 
-export const TIER_BOUNDARIES_DBM = [-60, -75] as const; // tier1/tier2, tier2/tier3
+export const TIER_BOUNDARIES_DBM = [-74, -84] as const; // tier1/tier2, tier2/tier3
 export const TIER_HYSTERESIS_DBM = 4;
 export const EMA_ALPHA = 0.3; // at ~1 sighting/s ≈ 5 s time constant
 
@@ -185,6 +189,7 @@ export function applyEvent(vm: ViewModel, env: Envelope): ViewModel {
       const dev = device(vm, id);
       dev.zone = "sky";
       dev.tier = null;
+      dev.rssiSmoothed = null; // radio-silent: stale RSSI is meaningless (issue #3)
       dev.awaySince = d.away_since as string;
       break;
     }

@@ -13,7 +13,7 @@ scan = "hci0"            # scanning adapter
 transfer = ["hci0"]      # transfer adapter pool (v1: same, single)
 
 [detection]
-rssi_floor_dbm = -75
+rssi_floor_dbm = -88
 lost_after_s = 90
 absent_after_s = 600
 
@@ -60,7 +60,7 @@ class TestDefaults:
         cfg = Config.load(path=None, env={})
         assert cfg.adapter.scan == "hci0"
         assert cfg.adapter.transfer == ["hci0"]
-        assert cfg.detection.rssi_floor_dbm == -75
+        assert cfg.detection.rssi_floor_dbm == -88
         assert cfg.detection.lost_after_s == 90.0
         assert cfg.detection.absent_after_s == 600.0
         assert cfg.harvest.connect_timeout_s == 20.0

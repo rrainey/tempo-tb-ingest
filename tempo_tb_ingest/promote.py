@@ -188,7 +188,58 @@ def build_proposal(store: Store, config: Config) -> Proposal:
             f"{len(unmapped)} session(s) unmapped in device-owners.json — fix the registry "
             "and run --reattribute"
         )
+    proposal.flags.extend(_same_takeoff_hints(proposal.cases, no_exit))
     return proposal
+
+
+#: two logs whose first GNSS fixes are this close rode the same airplane
+TAKEOFF_WINDOW_S = 90.0
+
+
+def _same_takeoff_hints(cases: list[CaseProposal], no_exit: list[Enriched]) -> list[str]:
+    """Surface probable grouping misses (issue #1, 2026-07-10).
+
+    Logs that share a takeoff (first GNSS fix within TAKEOFF_WINDOW_S) but were
+    not grouped mean one of the exits is wrong or missing — the operator should
+    look before accepting the proposal. Detection quality is upstream (firmware);
+    this makes the symptom visible instead of silent.
+    """
+    hints: list[str] = []
+
+    def first_fix(entry: Enriched) -> datetime | None:
+        return entry.info.first_fix_utc
+
+    def close(a: datetime | None, b: datetime | None) -> bool:
+        return a is not None and b is not None and abs((a - b).total_seconds()) <= TAKEOFF_WINDOW_S
+
+    for i, case_a in enumerate(cases):
+        for case_b in cases[i + 1 :]:
+            pairs = [
+                (ea, eb)
+                for ea in case_a.jumpers.values()
+                for eb in case_b.jumpers.values()
+                if close(first_fix(ea), first_fix(eb))
+            ]
+            if pairs:
+                ea, eb = pairs[0]
+                delta = abs(
+                    (ea.info.exit_utc - eb.info.exit_utc).total_seconds()  # type: ignore[operator]
+                )
+                hints.append(
+                    f"{case_a.dirname} and {case_b.dirname} share a takeoff "
+                    f"(first fixes within {TAKEOFF_WINDOW_S:.0f}s) but exits differ by "
+                    f"{delta / 60:.1f} min — one exit detection is likely wrong; "
+                    "review before applying"
+                )
+    for entry in no_exit:
+        for case in cases:
+            if any(close(first_fix(entry), first_fix(e)) for e in case.jumpers.values()):
+                hints.append(
+                    f"no-exit session {entry.label} shares a takeoff with {case.dirname} — "
+                    "possibly a jump whose exit went undetected"
+                )
+                break
+    return hints
 
 
 def _build_case(group: list[Enriched], number: int, config: Config) -> CaseProposal:

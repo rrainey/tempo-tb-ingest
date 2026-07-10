@@ -33,20 +33,33 @@ function foldAll(events: Envelope[]): ViewModel {
 }
 
 describe("tierFor", () => {
-  it("maps plain thresholds without history", () => {
-    expect(tierFor(-50, null)).toBe(1);
-    expect(tierFor(-70, null)).toBe(2);
-    expect(tierFor(-90, null)).toBe(3);
+  it("maps calibrated thresholds without history (issue #4: 1 m and 3 m are both tier 1)", () => {
+    expect(tierFor(-41, null)).toBe(1); // 1 m bench median
+    expect(tierFor(-72, null)).toBe(1); // 3 m bench median
+    expect(tierFor(-78, null)).toBe(2); // across the room
+    expect(tierFor(-90, null)).toBe(3); // edge of range
   });
 
   it("applies hysteresis at the boundary", () => {
-    // sitting in tier 2 at -61; a drift to -59 is within the 4 dBm margin
-    expect(tierFor(-59, 2)).toBe(2);
-    // a real approach to -55 crosses with margin: promote
-    expect(tierFor(-55, 2)).toBe(1);
-    // and the reverse: tier 1 at -62 holds, -65 demotes
-    expect(tierFor(-62, 1)).toBe(1);
-    expect(tierFor(-65, 1)).toBe(2);
+    // sitting in tier 2 at -75; a drift to -73 is within the 4 dBm margin
+    expect(tierFor(-73, 2)).toBe(2);
+    // a real approach to -69 crosses with margin: promote
+    expect(tierFor(-69, 2)).toBe(1);
+    // and the reverse: tier 1 at -76 holds, -79 demotes
+    expect(tierFor(-76, 1)).toBe(1);
+    expect(tierFor(-79, 1)).toBe(2);
+  });
+
+  it("sky devices carry no RSSI (issue #3)", () => {
+    const events = loadRecording("synthetic-day.jsonl");
+    let vm = initialViewModel();
+    vm.connection = "live";
+    const untilAway = events.slice(0, events.findIndex((e) => e.type === "device.away") + 1);
+    for (const env of untilAway) vm = applyEvent(vm, env);
+    const dev = vm.devices.get("0001")!;
+    expect(dev.zone).toBe("sky");
+    expect(dev.rssiSmoothed).toBeNull();
+    expect(dev.tier).toBeNull();
   });
 });
 

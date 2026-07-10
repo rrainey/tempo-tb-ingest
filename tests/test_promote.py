@@ -328,6 +328,47 @@ class TestProposal:
             assert needle in text
 
 
+class TestSameTakeoffHints:
+    """Issue #1 (2026-07-10): real July-3 data had two same-load logs whose
+    exits differed by 7m40s — grouping was correct, detection wasn't; the
+    proposal must surface it."""
+
+    def test_split_cases_sharing_takeoff_flagged(self, tmp_path: Path) -> None:
+        rig = Rig(tmp_path)
+        # identical first fix (16:14:55-analog), exits ~7.7 min apart
+        rig.commit(
+            "0002", "20260703/AAAAAAAA", make_log(16, 14, 55, 26.95, 22.55, filler="a"), "riley"
+        )
+        rig.commit(
+            "0003",
+            "20260703/BBBBBBBB",
+            make_log(16, 14, 55, 26.951, 22.551, exit_delta_ms=460_000, filler="b"),
+            "bb",
+        )
+        proposal = build_proposal(rig.store, rig.config)
+        assert len(proposal.cases) == 2  # correctly NOT grouped
+        assert any("share a takeoff" in f and "7.7 min" in f for f in proposal.flags)
+
+    def test_no_exit_session_sharing_takeoff_flagged(self, tmp_path: Path) -> None:
+        rig = Rig(tmp_path)
+        rig.commit(
+            "0001", "20260705/AAAAAAAA", make_log(13, 43, 16, 26.95, 22.55, filler="a"), "riley"
+        )
+        rig.commit(
+            "0007",
+            "20260705/BBBBBBBB",
+            make_log(13, 43, 20, 26.951, 22.551, exit_delta_ms=None, filler="b"),
+            "scott_z",
+        )
+        proposal = build_proposal(rig.store, rig.config)
+        assert any("shares a takeoff" in f and "undetected" in f for f in proposal.flags)
+
+    def test_unrelated_loads_not_flagged(self, tmp_path: Path) -> None:
+        rig = two_way_rig(tmp_path)
+        proposal = build_proposal(rig.store, rig.config)
+        assert not any("takeoff" in f for f in proposal.flags)
+
+
 class TestApply:
     def test_apply_copies_and_marks(self, tmp_path: Path) -> None:
         rig = two_way_rig(tmp_path)

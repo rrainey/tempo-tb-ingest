@@ -295,7 +295,7 @@ scan = "hci0"            # scanning adapter
 transfer = ["hci0"]      # transfer adapter pool (v1: same, single)
 
 [detection]
-rssi_floor_dbm = -75
+rssi_floor_dbm = -88
 lost_after_s = 90
 absent_after_s = 600
 

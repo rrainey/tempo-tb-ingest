@@ -49,7 +49,7 @@ class AdapterConfig(_Section):
 
 
 class DetectionConfig(_Section):
-    rssi_floor_dbm: int = -75
+    rssi_floor_dbm: int = -88  # recalibrated 2026-07-10 (issue #4): 3 m reads ~-70
     lost_after_s: float = Field(default=90.0, gt=0)
     absent_after_s: float = Field(default=600.0, gt=0)
 
