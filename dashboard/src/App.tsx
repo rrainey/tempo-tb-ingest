@@ -1,49 +1,108 @@
 /**
- * Step-17 minimal state view: proves the pipe (roster + ticker + totals).
- * The step-18 visualization (sky line, tiers, bit-stream animation — see
- * docs/dashboard-notes.md) replaces this markup, keeping the same view-model.
+ * Step-18 dashboard: the full-screen diorama (Scene) + HTML overlay chrome —
+ * header, stats (lower-right), event log (lower-left), legend popup, and the
+ * unmissable stale treatment. Layout decisions: docs/dashboard-notes.md.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { DashboardClient } from "./client";
-import { awaySeconds, initialViewModel, type DeviceView, type ViewModel } from "./reducer";
+import Scene from "./Scene";
+import { initialViewModel, type ViewModel } from "./reducer";
+import { palette } from "./palette";
 
-function DeviceRow({ dev, now }: { dev: DeviceView; now: string }) {
-  const away = awaySeconds(dev, now);
+const LEGEND: [string, string][] = [
+  ["— above dashed line —", "device away: presumed on a jump (↑ time away)"],
+  ["three rows", "signal tiers; lowest row = strongest reception"],
+  ["amber moving bits", "active download, device → base (speed ∝ data rate)"],
+  ["✓N", "sessions collected this run"],
+  ["▼N", "sessions discovered on device, not yet downloaded"],
+  ["◆ after name", "load organizer (default formation base)"],
+  ["dashed card + !!", "unprovisioned device — needs a name (never harvested)"],
+  ["‼id", "identity conflict: duplicate device suffix in the fleet"],
+  ["⚠", "session list truncated on device — archive the card"],
+];
+
+function Stats({ vm }: { vm: ViewModel }) {
+  const collectedRun = [...vm.devices.values()].reduce((n, d) => n + d.badge, 0);
+  const rate = [...vm.devices.values()].find((d) => d.transfer)?.transfer?.rateBps ?? 0;
+  const rows: [string, string][] = [
+    ["devices in use", String(vm.devices.size)],
+    ["collected (run)", String(collectedRun)],
+    ["stored (all time)", String(vm.totals.sessions_stored)],
+    ["pending download", String(vm.totals.pending_download ?? 0)],
+    ["data rate", rate > 0 ? `${(rate / 1024).toFixed(1)} KB/s` : "—"],
+    ["errors", String(vm.totals.failures)],
+  ];
   return (
-    <tr>
-      <td>{dev.label}</td>
-      <td>{dev.jumper ?? "—"}{dev.isLo ? " (LO)" : ""}</td>
-      <td>
-        {dev.zone === "sky"
-          ? `in the sky${away != null ? ` ↑${Math.floor(away / 60)}m` : ""}`
-          : `tier ${dev.tier ?? "?"}`}
-      </td>
-      <td>{dev.rssiSmoothed != null ? `${dev.rssiSmoothed.toFixed(0)} dBm` : ""}</td>
-      <td>{dev.badge > 0 ? `✓${dev.badge}` : ""}</td>
-      <td>{dev.pendingDownload > 0 ? `▼${dev.pendingDownload}` : ""}</td>
-      <td>
-        {dev.transfer
-          ? `${(dev.transfer.bytesDone / 1024).toFixed(0)} KB @ ${(dev.transfer.rateBps / 1024).toFixed(1)} KB/s`
-          : ""}
-      </td>
-      <td>
-        {dev.flags.unprovisioned ? "!! " : ""}
-        {dev.flags.conflicted ? "CONFLICT " : ""}
-        {dev.flags.truncated ? "TRUNC " : ""}
-      </td>
-    </tr>
+    <div className="overlay panel" style={{ right: 18, bottom: 18, minWidth: 250 }}>
+      <div style={{ color: palette.bright, marginBottom: 6 }}>status</div>
+      <table style={{ borderSpacing: 0 }}>
+        <tbody>
+          {rows.map(([k, v]) => (
+            <tr key={k}>
+              <td style={{ color: palette.mid, paddingRight: 16 }}>{k}</td>
+              <td style={{ color: palette.brightest, textAlign: "right" }}>{v}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {vm.warnings.map((w) => (
+        <div key={w} style={{ color: palette.warn, marginTop: 6, maxWidth: 300 }}>
+          ⚠ {w}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Ticker({ vm }: { vm: ViewModel }) {
+  if (vm.ticker.length === 0) return null;
+  return (
+    <div className="overlay panel" style={{ left: 18, bottom: 18, minWidth: 300 }}>
+      {vm.ticker.map((t, i) => (
+        <div
+          key={`${t.ts}-${i}`}
+          className="ticker-entry"
+          style={{ color: palette.bright, opacity: Math.max(0.25, 1 - i * 0.15) }}
+        >
+          <span style={{ color: palette.dim }}>{t.ts.slice(11, 19)} </span>
+          {t.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Legend({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="stale-veil" style={{ background: "rgba(4,6,4,0.85)" }} onClick={onClose}>
+      <div className="panel" style={{ maxWidth: 620 }}>
+        <div style={{ color: palette.bright, marginBottom: 10 }}>legend</div>
+        <table style={{ borderSpacing: "0 4px" }}>
+          <tbody>
+            {LEGEND.map(([symbol, meaning]) => (
+              <tr key={symbol}>
+                <td style={{ color: palette.brightest, paddingRight: 18, whiteSpace: "nowrap" }}>
+                  {symbol}
+                </td>
+                <td style={{ color: palette.mid }}>{meaning}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{ color: palette.dim, marginTop: 10 }}>click anywhere to close</div>
+      </div>
+    </div>
   );
 }
 
 export default function App() {
   const [vm, setVm] = useState<ViewModel>(initialViewModel);
   const [now, setNow] = useState(() => new Date().toISOString());
-  const clientRef = useRef<DashboardClient | null>(null);
+  const [legendOpen, setLegendOpen] = useState(false);
 
   useEffect(() => {
     const client = new DashboardClient((next) => setVm({ ...next }));
-    clientRef.current = client;
     client.start();
     const timer = setInterval(() => setNow(new Date().toISOString()), 1000);
     return () => {
@@ -52,47 +111,47 @@ export default function App() {
     };
   }, []);
 
-  const devices = [...vm.devices.values()].sort((a, b) => a.label.localeCompare(b.label));
+  const clock = new Date(now);
   return (
-    <div style={{ padding: 16 }}>
-      <h2>
-        tempo-tb-ingest {vm.daemonVersion}{" "}
-        <small>
-          [{vm.connection}
-          {vm.scanning ? " · scanning" : ""}]
-        </small>
-      </h2>
-      {vm.connection === "stale" && (
-        <div style={{ color: "#e0c040" }}>⚠ RECONNECTING — display may be stale</div>
+    <div style={{ position: "relative", height: "100%", overflow: "hidden" }}>
+      <Scene vm={vm} now={now} />
+
+      <div className="overlay" style={{ left: 18, top: 14, color: palette.mid }}>
+        <span style={{ color: palette.bright, letterSpacing: 2 }}>TEMPO INGEST</span>
+        <span> {vm.daemonVersion}</span>
+        <span style={{ color: vm.connection === "live" ? palette.bright : palette.warn }}>
+          {" "}
+          · {vm.connection}
+        </span>
+      </div>
+
+      <div className="overlay" style={{ right: 18, top: 14, display: "flex", gap: 14, alignItems: "center" }}>
+        <span style={{ color: palette.mid }}>
+          {clock.toLocaleTimeString([], { hour12: false })}{" "}
+          <span style={{ color: palette.dim }}>
+            / {clock.toISOString().slice(11, 19)}Z
+          </span>
+        </span>
+        <button className="legend-button" onClick={() => setLegendOpen(true)} title="legend">
+          ?
+        </button>
+      </div>
+
+      <Ticker vm={vm} />
+      <Stats vm={vm} />
+
+      {legendOpen && <Legend onClose={() => setLegendOpen(false)} />}
+
+      {vm.connection !== "live" && (
+        <div className="stale-veil">
+          <div style={{ textAlign: "center" }}>
+            <div style={{ color: palette.danger, fontSize: 34, letterSpacing: 6 }}>
+              {vm.connection === "stale" ? "RECONNECTING" : "CONNECTING"}
+            </div>
+            <div style={{ color: palette.mid, marginTop: 8 }}>display may be stale</div>
+          </div>
+        </div>
       )}
-      {vm.warnings.map((w) => (
-        <div key={w} style={{ color: "#e0c040" }}>⚠ {w}</div>
-      ))}
-      <table cellPadding={6}>
-        <thead>
-          <tr>
-            <th>id</th><th>jumper</th><th>zone</th><th>rssi</th>
-            <th>collected</th><th>pending</th><th>transfer</th><th>flags</th>
-          </tr>
-        </thead>
-        <tbody>
-          {devices.map((d) => (
-            <DeviceRow key={d.id} dev={d} now={now} />
-          ))}
-        </tbody>
-      </table>
-      <p>
-        stored {vm.totals.sessions_stored} · {(vm.totals.bytes_stored / (1 << 20)).toFixed(1)} MB ·
-        pending {vm.totals.pending_download ?? 0} · harvests {vm.totals.harvests_completed} ·
-        errors {vm.totals.failures}
-      </p>
-      <ul>
-        {vm.ticker.map((t, i) => (
-          <li key={`${t.ts}-${i}`}>
-            {t.ts.slice(11, 19)} {t.text}
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

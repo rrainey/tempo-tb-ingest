@@ -274,6 +274,63 @@ class TestUnprovisioned:
         assert h.types() == []
 
 
+class TestScannerPauseAwareness:
+    """Soak finding 2026-07-09: paused-scanner silence is not absence."""
+
+    def test_no_aging_while_paused(self) -> None:
+        h = Harness()
+        h.tracker.observe(sighting(0))
+        h.tracker.scanner_paused(at(10))
+        h.tracker.sweep(at(300))  # paused the whole time
+        assert h.tracker.devices()[0].state is DeviceState.PRESENT
+        assert "device.away" not in h.types()
+
+    def test_pause_time_discounted_after_resume(self) -> None:
+        h = Harness()
+        h.tracker.observe(sighting(0))
+        h.tracker.scanner_paused(at(10))
+        h.tracker.scanner_resumed(at(400))  # 390 s blind
+        h.tracker.sweep(at(430))  # effective silence 40 s < lost_after
+        assert h.tracker.devices()[0].state is DeviceState.PRESENT
+        h.tracker.sweep(at(500))  # effective 110 s >= lost_after
+        assert h.tracker.devices()[0].state is DeviceState.AWAY
+
+    def test_no_false_return_after_long_harvest_blindness(self) -> None:
+        """The exact soak scenario: bench device 'absent' 700 s raw, but the
+        scanner was paused for most of it — must not re-trigger a harvest."""
+        h = Harness()
+        h.tracker.observe(sighting(0))
+        h.tracker.scanner_paused(at(5))
+        h.tracker.sweep(at(650))  # still paused: no aging
+        h.tracker.scanner_resumed(at(695))
+        h.tracker.observe(sighting(710))  # effective absence = 20 s
+        assert h.returned == ["0001"]  # only the first-ever trigger
+        assert h.types().count("device.returned") == 1
+
+    def test_genuine_absence_spanning_pause_still_returns(self) -> None:
+        h = Harness()
+        h.tracker.observe(sighting(0))
+        h.tracker.sweep(at(LOST_AFTER))  # genuinely away
+        h.tracker.scanner_paused(at(100))
+        h.tracker.scanner_resumed(at(200))  # 100 s blind inside the absence
+        h.tracker.observe(sighting(800))  # effective absence 700 s >= 600
+        assert h.returned == ["0001", "0001"]
+        returned = [e for e in h.events() if e.type == "device.returned"]
+        assert returned[1].data["absent_for_s"] == 700.0  # discounted value
+
+    def test_sighting_during_pause_resets_baseline(self) -> None:
+        # a sighting can slip in at pause boundaries; baseline must follow
+        h = Harness()
+        h.tracker.observe(sighting(0))
+        h.tracker.scanner_paused(at(10))
+        h.tracker.scanner_resumed(at(100))
+        h.tracker.observe(sighting(110))
+        h.tracker.sweep(at(150))  # 40 s silence, no pause since sighting
+        assert h.tracker.devices()[0].state is DeviceState.PRESENT
+        h.tracker.sweep(at(210))  # 100 s >= lost_after
+        assert h.tracker.devices()[0].state is DeviceState.AWAY
+
+
 class TestPruning:
     def test_long_gone_device_pruned(self) -> None:
         h = Harness()

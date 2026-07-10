@@ -95,6 +95,32 @@ describe("synthetic-day recording", () => {
   });
 });
 
+describe("loop-replay restart boundary", () => {
+  it("daemon.started resets run state but keeps the ticker", () => {
+    const events = loadRecording("live-harvest-20260708.jsonl");
+    let vm = foldAll(events);
+    expect(vm.totals.sessions_stored).toBe(13);
+    expect(vm.ticker.length).toBeGreaterThan(0);
+    const tickerBefore = vm.ticker.length;
+    vm = applyEvent(vm, {
+      v: 1,
+      seq: vm.lastSeq + 1,
+      ts: "2026-07-10T12:00:00.000Z",
+      type: "daemon.started",
+      data: { version: "replay-loop", config: {} },
+    });
+    expect(vm.totals.sessions_stored).toBe(0);
+    expect(vm.devices.size).toBe(0);
+    expect(vm.ticker.length).toBe(tickerBefore); // history survives the loop
+    // and a re-run of the recording (re-sequenced) animates again
+    const offset = vm.lastSeq;
+    for (const env of events) {
+      vm = applyEvent(vm, { ...env, seq: env.seq + offset });
+    }
+    expect(vm.totals.sessions_stored).toBe(13);
+  });
+});
+
 describe("live harvest recording (real hardware, 2026-07-08)", () => {
   const events = loadRecording("live-harvest-20260708.jsonl");
 

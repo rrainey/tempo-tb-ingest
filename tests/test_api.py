@@ -106,6 +106,30 @@ class TestHttp:
         assert devices["0001"]["pending_download"] == 1  # one still on the device
         assert snapshot["totals"]["pending_download"] == 1
 
+    async def test_daemon_started_resets_fold(self) -> None:
+        """Loop-replay boundary (or a real daemon restart) must not
+        double-count — the fold observed at 67k sessions after a night of
+        looping (2026-07-10)."""
+        fold = StateFold()
+        bus = ev.EventBus()
+        fold.apply(
+            bus.publish(
+                ev.StoreSessionAdded(
+                    id="0001",
+                    session_key="20260709/AAAAAAAA",
+                    path="x",
+                    size=10,
+                    sha256="0" * 64,
+                    jumper=None,
+                )
+            )
+        )
+        assert fold.snapshot()["totals"]["sessions_stored"] == 1
+        fold.apply(bus.publish(ev.DaemonStarted(version="replay-loop", config={})))
+        snapshot = fold.snapshot()
+        assert snapshot["totals"]["sessions_stored"] == 0
+        assert snapshot["devices"] == []
+
     async def test_static_serving(self, tmp_path: Path) -> None:
         (tmp_path / "index.html").write_text("<title>tempo</title>")
         bus, fold = folded_synthetic()

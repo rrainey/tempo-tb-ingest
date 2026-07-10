@@ -79,6 +79,8 @@ class DeviceRecord:
     _prior_mac_left: datetime | None = None
     _last_seen_event: datetime | None = None
     _macs_in_conflict: set[str] = field(default_factory=set)
+    # cumulative scanner-paused seconds at the last accepted sighting
+    _pause_baseline_s: float = 0.0
 
 
 @dataclass
@@ -112,6 +114,38 @@ class PresenceTracker:
         self._on_returned = on_returned
         self._devices: dict[str, DeviceRecord] = {}
         self._unprovisioned: dict[str, UnprovisionedRecord] = {}
+        self._paused_accum_s = 0.0
+        self._paused_since: datetime | None = None
+
+    # -- scanner pause awareness (soak finding, 2026-07-09) --------------------
+    #
+    # While the scanner is paused for a connection, nobody can be sighted —
+    # that silence is not evidence of absence. Paused intervals are excluded
+    # from every device's silence clock, so bench-bound devices no longer age
+    # to AWAY (or falsely RETURN) during long harvests. Trade-off, accepted:
+    # a genuine absence overlapping a pause is under-measured by the pause
+    # length (we observed nothing during it), making return detection
+    # conservative rather than trigger-happy.
+
+    def scanner_paused(self, now: datetime) -> None:
+        if self._paused_since is None:
+            self._paused_since = now
+
+    def scanner_resumed(self, now: datetime) -> None:
+        if self._paused_since is not None:
+            self._paused_accum_s += (now - self._paused_since).total_seconds()
+            self._paused_since = None
+
+    def _paused_seconds(self, now: datetime) -> float:
+        current = (
+            (now - self._paused_since).total_seconds() if self._paused_since is not None else 0.0
+        )
+        return self._paused_accum_s + current
+
+    def _effective_silence_s(self, record: DeviceRecord, now: datetime) -> float:
+        raw = (now - record.last_seen).total_seconds()
+        paused = self._paused_seconds(now) - record._pause_baseline_s
+        return max(0.0, raw - max(0.0, paused))
 
     # -- inputs ---------------------------------------------------------------
 
@@ -138,7 +172,7 @@ class PresenceTracker:
     def sweep(self, now: datetime) -> None:
         """Apply time-based transitions; call periodically (idempotent)."""
         for record in list(self._devices.values()):
-            silent_s = (now - record.last_seen).total_seconds()
+            silent_s = self._effective_silence_s(record, now)
             if record.state is DeviceState.PRESENT and silent_s >= self._lost_after_s:
                 record.state = DeviceState.AWAY
                 record.away_since = record.last_seen
@@ -173,6 +207,7 @@ class PresenceTracker:
             last_seen=sighting.ts,
         )
         record._last_seen_event = sighting.ts
+        record._pause_baseline_s = self._paused_seconds(sighting.ts)
         self._devices[device_id] = record
         self._bus.publish(
             DeviceNew(id=device_id, mac=sighting.mac, name=sighting.name, rssi=sighting.rssi)
@@ -182,7 +217,8 @@ class PresenceTracker:
 
     def _accepted_sighting(self, record: DeviceRecord, sighting: Sighting) -> None:
         assert sighting.name is not None
-        absent_for_s = (sighting.ts - record.last_seen).total_seconds()
+        # pause-discounted: silence while the scanner was paused is not absence
+        absent_for_s = self._effective_silence_s(record, sighting.ts)
         was_away = record.state is DeviceState.AWAY
 
         record.name = sighting.name
@@ -191,6 +227,7 @@ class PresenceTracker:
         record.last_seen = sighting.ts
         record.state = DeviceState.PRESENT
         record.away_since = None
+        record._pause_baseline_s = self._paused_seconds(sighting.ts)
 
         if record._last_seen_event is None or (
             (sighting.ts - record._last_seen_event).total_seconds() >= SEEN_THROTTLE_S

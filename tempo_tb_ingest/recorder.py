@@ -113,14 +113,31 @@ async def replay(
         raise EventError(f"{path}: no valid events to replay")
 
     cycles = max_cycles if max_cycles is not None else (None if loop else 1)
+    max_seq = max(env.seq for env in envelopes)
+    seq_offset = 0
     while True:
+        if stats.cycles > 0:
+            # Loop restart = a fresh daemon run: re-sequence monotonically and
+            # publish the restart marker so folds reset instead of dropping
+            # repeated seqs / double-counting (bug found in the looping demo,
+            # 2026-07-10).
+            seq_offset += max_seq + 1
+            bus.publish_envelope(
+                Envelope(
+                    seq=seq_offset,
+                    ts=envelopes[0].ts,
+                    type="daemon.started",
+                    data={"version": "replay-loop", "config": {}},
+                )
+            )
         previous = None
         for env in envelopes:
             if previous is not None:
                 gap = (env.ts - previous).total_seconds()
                 if gap > 0:
                     await sleep(gap / speed)
-            bus.publish_envelope(env)
+            out = env.model_copy(update={"seq": env.seq + seq_offset}) if seq_offset else env
+            bus.publish_envelope(out)
             stats.published += 1
             previous = env.ts
         stats.cycles += 1

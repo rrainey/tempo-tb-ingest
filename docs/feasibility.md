@@ -435,6 +435,31 @@ design §3.11 allows editing/excluding — CLI selection flags deferred.
   running daemon); SIGTERM → clean exit in **0.20 s** with `daemon.stopping`
   recorded and the lock released.
 
+### Implementation step 16 (bench soak) — 2026-07-09 evening
+
+Small-scale soak on the workstation: daemon + dashboard run manually
+(`soak.toml`), real staging trees, operator's `device-owners.json`, five devices
+with multi-weekend backlogs. ~25 min run, operator-observed via dashboard.
+
+| Result | Detail |
+|---|---|
+| Devices | ✅ all 5 detected and harvested (0001, 0002, 0003, 0007, 0010) |
+| Sessions | ✅ **22 sessions / 44.6 MB**, correctly organized under `device-data/` |
+| Radio reliability | ✅ **zero transfer failures, zero retries** across 23 transfers (MTU 495 negotiated every connection) |
+| Error paths | ✅ exactly one loud `store.error` — the known 0-byte `19700101/…` artifact, skipped by design |
+| Baseline isolation | ✅ `rebuild-index --mark-baseline --except-date 20260705` kept promote scoped to new material |
+| Shutdown | ✅ clean on SIGINT |
+
+**Behavioral finding — away-flapping under paused scanning**: 15 `device.away` +
+1 extra returned/harvest cycle among bench-bound devices. Cause: the scanner is
+paused during connections (BlueZ requirement); a long backlog harvest (~10 min
+for 0002) blinds sightings past `lost_after`, so idle devices age to AWAY (and
+can re-trigger RETURNED) while sitting on the desk. Harmless here (the re-harvest
+was a quick no-op) but visually wrong (devices "in the sky" on the dashboard) and
+noisy. Candidate fixes: pause-aware presence aging (don't age while the scanner
+is paused), and/or radio Option 2 (dedicated scan adapter). To be prioritized
+with the operator's GitHub issues.
+
 ## Roadmap
 
 1. **v1 daemon (Radio Option 1, Option A stack):** scanner + return detector + single

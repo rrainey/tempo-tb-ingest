@@ -127,6 +127,56 @@ def promote(
         store.close()
 
 
+@app.command(name="rebuild-index")
+def rebuild_index(
+    config: Annotated[Path | None, typer.Option(help="TOML config file")] = None,
+    mark_baseline: Annotated[
+        bool,
+        typer.Option(
+            "--mark-baseline",
+            help="After rebuilding, mark every indexed session as already promoted"
+            " ('pre-existing') so promote only proposes future harvests.",
+        ),
+    ] = False,
+    except_date: Annotated[
+        list[str],
+        typer.Option(
+            "--except-date",
+            help="With --mark-baseline: leave sessions of this YYYYMMDD unmarked (repeatable).",
+        ),
+    ] = [],  # noqa: B006 - typer needs a literal default
+) -> None:
+    """Reconstruct the session index by walking the staging tree (design §3.6)."""
+    from tempo_tb_ingest.config import Config, ConfigError
+    from tempo_tb_ingest.store import Store
+
+    try:
+        cfg = Config.load(config)
+    except ConfigError as exc:
+        typer.echo(f"rebuild-index: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    store = Store(
+        staging_root=cfg.store.staging_root,
+        data_dir=cfg.store.data_dir,
+        spool_dir=cfg.harvest.spool_dir,
+    )
+    try:
+        count = store.rebuild_index()
+        typer.echo(f"indexed {count} session(s) from {cfg.store.staging_root}")
+        if mark_baseline:
+            marked = 0
+            for session in store.sessions():
+                if session.promoted_to is not None:
+                    continue
+                if session.session_key.split("/", 1)[0] in except_date:
+                    continue
+                store.mark_promoted(session.device_id, session.session_key, "pre-existing")
+                marked += 1
+            typer.echo(f"marked {marked} session(s) as pre-existing baseline")
+    finally:
+        store.close()
+
+
 @app.command()
 def replay(
     recording: Annotated[Path, typer.Argument(help="JSONL event recording")],

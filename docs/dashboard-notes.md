@@ -66,8 +66,8 @@ altitude:
    - Errors
 8. **Event/history log**: a short fading list of notable events —
    "0007 scott_z — 2 sessions, 4.4 MB ✓", "0001 riley returned (away 22 m)".
-   Position: upper-right or lower-left, TBD (lower-left balances the
-   lower-right stats panel).
+   Position: **lower-left** (decided 2026-07-09; balances the lower-right
+   stats panel).
 9. **Warning glyphs** on the affected element (device card or base box):
    session-list truncated, identity conflict, unprovisioned, scanner
    degraded. A **Help/Legend button** opens a popup explaining every glyph
@@ -98,6 +98,19 @@ altitude:
 | `device.provisioning_needed` | dashed outline + "!!" |
 | `scanner.degraded/recovered` | glyph on base box |
 | `stream.gap` / WS drop | full-display stale treatment |
+
+## Step-18 implementation decisions (2026-07-09, provisional pending review)
+
+- Stats semantics: "collected (run)" derived from events + "stored (all time)"
+  from totals; a true reset-at-midnight "today" counter deferred (daemon-side).
+- Presence truthfulness: pause-aware aging implemented daemon-side *before*
+  visuals — paused-scanner silence no longer counts toward AWAY/RETURNED, so
+  the sky region tells the truth during long harvests (soak finding).
+- Provisional visual values (centralized in `dashboard/src/palette.ts` for
+  easy veto): bg `#0b100b`; greens `#2e5230` / `#4f8f52` / `#8fe08f` /
+  `#c8ffc8`; accent (transfer only) amber `#e8b23c`; monospace stack; card
+  moves 900 ms ease; bit-stream dash cycle = clamp(32768 / rate_bps, 0.25 s,
+  2.5 s); LO marker "◆" after jumper name; kebab omitted entirely in v1.
 
 ## Data-layer implications (step 17 backlog)
 

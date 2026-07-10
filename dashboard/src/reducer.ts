@@ -274,6 +274,20 @@ export function applyEvent(vm: ViewModel, env: Envelope): ViewModel {
       vm.scanning = true;
       vm.warnings = vm.warnings.filter((w) => !w.startsWith("scanner degraded"));
       break;
+    case "daemon.started": {
+      // daemon (or loop replay) restarted: reset run state, keep the ticker
+      const ticker = vm.ticker;
+      const lastSeq = vm.lastSeq;
+      const fresh = initialViewModel();
+      vm.devices = fresh.devices;
+      vm.totals = fresh.totals;
+      vm.warnings = [];
+      vm.activeJob = null;
+      vm.scanning = true;
+      vm.ticker = ticker;
+      vm.lastSeq = lastSeq;
+      break;
+    }
     case "daemon.stopping":
       vm.scanning = false;
       break;

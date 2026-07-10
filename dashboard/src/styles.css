@@ -1,0 +1,74 @@
+/* step-18 visuals: motion + overlay chrome (palette values in palette.ts) */
+
+@keyframes bit-flow {
+  to {
+    stroke-dashoffset: -22; /* one dash period (4+18) per cycle, toward base */
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes fade-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.overlay {
+  position: absolute;
+  pointer-events: none;
+  font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+}
+
+.panel {
+  background: rgba(16, 26, 16, 0.88);
+  border: 1px solid #2e5230;
+  border-radius: 10px;
+  padding: 10px 14px;
+  pointer-events: auto;
+}
+
+.stale-veil {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 6, 4, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
+  backdrop-filter: blur(2px);
+}
+
+.legend-button {
+  pointer-events: auto;
+  background: none;
+  border: 1px solid #2e5230;
+  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  color: #4f8f52;
+  font: inherit;
+  cursor: pointer;
+}
+
+.legend-button:hover {
+  color: #8fe08f;
+  border-color: #4f8f52;
+}
+
+.ticker-entry {
+  animation: fade-slide-in 400ms ease;
+}

@@ -132,6 +132,34 @@ class TestReplay:
         assert stats.cycles == 3
         assert stats.published == 3
 
+    def test_loop_reseqences_and_marks_restarts(self, tmp_path: Path) -> None:
+        """Looping must not repeat seq numbers (clients drop stale seqs) and
+        must publish a daemon.started boundary so folds reset — the frozen
+        looping-demo bug, 2026-07-10."""
+        e1 = ev.Envelope(seq=5, ts=T0, type="device.lost", data={"id": "0001"})
+        recording = tmp_path / "r.jsonl"
+        recording.write_text(e1.to_json() + "\n")
+
+        async def scenario() -> list[ev.Envelope]:
+            bus = ev.EventBus()
+            sub = bus.subscribe(queue_size=64)
+            await replay(recording, bus, loop=True, max_cycles=3, speed=1e9)
+            bus.close()
+            return [e async for e in sub]
+
+        received = asyncio.run(scenario())
+        types = [e.type for e in received]
+        assert types == [
+            "device.lost",
+            "daemon.started",
+            "device.lost",
+            "daemon.started",
+            "device.lost",
+        ]
+        seqs = [e.seq for e in received]
+        assert seqs == sorted(seqs)
+        assert len(set(seqs)) == len(seqs)  # strictly increasing, no repeats
+
     def test_empty_recording_is_an_error(self, tmp_path: Path) -> None:
         recording = tmp_path / "r.jsonl"
         recording.write_text("garbage\n")

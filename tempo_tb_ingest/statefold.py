@@ -81,9 +81,21 @@ class StateFold:
     # -- event handlers ---------------------------------------------------- #
 
     def _on_daemon_started(self, data: dict[str, Any], env: Envelope) -> None:
+        # a (re)start resets accumulated state — also the loop-replay boundary
         self._version = data.get("version", self._version)
         self._started_at = format_ts(env.ts)
         self._scanning = True
+        self._warnings = []
+        self._devices = {}
+        self._unprovisioned = {}
+        self._queue = []
+        self._active_job = None
+        self._totals = {
+            "sessions_stored": 0,
+            "bytes_stored": 0,
+            "harvests_completed": 0,
+            "failures": 0,
+        }
 
     def _on_daemon_stopping(self, data: dict[str, Any], env: Envelope) -> None:
         self._scanning = False

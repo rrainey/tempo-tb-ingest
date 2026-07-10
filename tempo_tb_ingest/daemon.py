@@ -66,17 +66,33 @@ class ScannerPausingRadioGate:
 
     BlueZ refuses to connect while discovery is active
     (org.bluez.Error.InProgress, observed live 2026-07-08) — so each
-    connected job suspends the scanner for its duration."""
+    connected job suspends the scanner for its duration. The presence
+    tracker is told about the pause so the blind interval doesn't count as
+    device absence (soak finding, 2026-07-09)."""
 
-    def __init__(self, scanner: Scanner) -> None:
+    def __init__(
+        self,
+        scanner: Scanner,
+        presence: "PresenceTracker | None" = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self._scanner = scanner
+        self._presence = presence
+        self._clock = clock or (lambda: datetime.now(UTC))
         self._lock = asyncio.Lock()
+
+    def bind_presence(self, presence: "PresenceTracker") -> None:
+        self._presence = presence
 
     async def __aenter__(self) -> None:
         await self._lock.acquire()
         await self._scanner.pause()
+        if self._presence is not None:
+            self._presence.scanner_paused(self._clock())
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if self._presence is not None:
+            self._presence.scanner_resumed(self._clock())
         self._scanner.resume()
         self._lock.release()
 
@@ -115,7 +131,7 @@ class Daemon:
             link_factory or self._default_link_factory,
             resolve_target=self._resolve_target,
             max_attempts=config.harvest.max_attempts,
-            radio_lock=ScannerPausingRadioGate(self.scanner),
+            radio_lock=(radio_gate := ScannerPausingRadioGate(self.scanner, clock=self._clock)),
             clock=self._clock,
             on_harvested=self._on_harvested,
         )
@@ -126,6 +142,7 @@ class Daemon:
             absent_after_s=config.detection.absent_after_s,
             on_returned=self.worker.request,
         )
+        radio_gate.bind_presence(self.presence)
         # event-derived dynamics for the snapshot (queue/active job/totals/warnings)
         self._fold = StateFold(
             version=__version__,
