@@ -119,7 +119,13 @@ async def rig(request: pytest.FixtureRequest) -> AsyncIterator[Rig]:
         from tempo_tb_ingest.device.smp_link import SmpLink, connect_with_retry
 
         truth = live_truth()
-        link = SmpLink(LIVE_DEVICE, connect_timeout_s=15.0)
+        # TEMPO_ADAPTER binds the live tier to a specific controller ("hciN");
+        # unset = system default (step 21: run the same suite via a dongle)
+        link = SmpLink(
+            LIVE_DEVICE,
+            connect_timeout_s=15.0,
+            adapter=os.environ.get("TEMPO_ADAPTER"),
+        )
         await connect_with_retry(link, attempts=4, backoff_s=3.0)
     yield Rig(link=link, truth=truth)
     await link.disconnect()

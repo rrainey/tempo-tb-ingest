@@ -24,8 +24,9 @@ In scope for v1:
   visual/creative design is specified separately (forthcoming document) and consumes
   the contract defined here in §6.
 
-Out of scope for v1: multi-adapter pools (designed for, not built), firmware changes,
-device provisioning UI, deletion of sessions from devices.
+Out of scope for v1: firmware changes, device provisioning UI, deletion of sessions
+from devices. **Multi-adapter pools**, originally v1-deferred, are now in scope as
+the radio Option 2 implementation (§3.13; issue #2; plan Phase H).
 
 ## 2. System overview
 
@@ -407,6 +408,75 @@ day or whenever a device changes hands), located at
 - A harvested device with no registry entry is stored unattributed
   (`jumper = NULL`) and surfaced via `owners.unmapped` — visible on the dashboard,
   fixable later via `promote --reattribute`.
+
+### 3.13 Multi-adapter operation — radio Option 2 (added 2026-07-10, issue #2)
+
+Up to five BLE controllers used concurrently: **one dedicated scan adapter**
+(continuous sniffing, never paused) and **up to four transfer adapters** forming a
+query/download worker pool. Transfer hardware: nRF52840 Dongles running Zephyr's
+stock `hci_usb` sample (source + DFU package retained in the workspace at
+`~/hci_usb`), each appearing to BlueZ as an ordinary USB HCI controller.
+
+**Adapter identity.** hci indices depend on plug order (the first dongle attached
+even became the system *default* controller), so configuration identifies adapters
+by **BlueZ controller address** (`bluetoothctl list`), with `hciN` accepted for
+bench convenience. Caveat discovered on real hardware: the dongle's *public* BD
+address reads all-zeros at the HCI level — its identity address (Zephyr static
+random, FICR-derived, stable per chip across replug/reboot) exists only at the
+BlueZ layer, so resolution goes through BlueZ (D-Bus), never `hciconfig`. A
+`tempo-tb-ingest adapters` utility lists controllers (address, hci name, bus) to
+make config authoring trivial.
+
+```toml
+[adapter]
+scan = "44:A3:BB:E8:AD:D1"                  # built-in: continuous sniffing
+transfer = ["DC:DF:ED:91:91:1D", "…", "…", "…"]   # dongle pool (1..4)
+```
+
+**Interaction model.**
+
+```
+   Scanner ──► Presence ──► shared FIFO job queue (coalesced: ≤1 job/device)
+ (scan adapter,                    │
+  never paused)        ┌──────────┼──────────┬──────────┐
+                       ▼          ▼          ▼          ▼
+                    worker A   worker B   worker C   worker D
+                   (adapter 1)(adapter 2)(adapter 3)(adapter 4)
+                       └───── each: one connection at a time ─────┘
+```
+
+- One worker task per transfer adapter, all pulling from the shared queue —
+  N devices returning together harvest **N-at-once** (bounded by pool size).
+- Invariants: per-adapter serialization (a controller holds one connection at a
+  time); per-device single job (existing queue coalescing); a failed job re-queues
+  via the existing sighting-driven retry and may land on any adapter.
+- **Mode selection is configuration**: if `scan` equals the sole `transfer` entry,
+  the daemon runs exactly the validated single-adapter mode
+  (`ScannerPausingRadioGate` + presence pause hooks). In pool mode the scanner is
+  never paused and the pause hooks are simply never invoked — presence sees
+  uninterrupted sightings (the issue-#2 symptom disappears at the root).
+- **Adapter-bound links**: smpclient's BLE transport does not expose adapter
+  selection; `smp_link` gains an adapter-bound transport subclass that performs the
+  target discovery and connection on the worker's own adapter (a device must be
+  discovered *by that controller* before BlueZ will connect it).
+- **Failure containment**: a vanished adapter (unplug, USB reset) degrades only its
+  worker — evented loudly (`adapter.lost` / `adapter.recovered`, additive
+  vocabulary), pool capacity shrinks, scanning and other workers continue. The
+  daemon never exits for adapter loss.
+- **Contract**: snapshot gains `active_jobs: [0..n]` (additive; `active_job` is
+  retained as its first element — §6.1 always said to treat it as 0..n). The
+  `daemon.adapters` echo reports resolved roles.
+- **Known hardware risk (measured 2026-07-10)**: the stock `hci_usb` build
+  negotiates tiny host ACL buffers (27 B × 3). Throughput via the dongle must be
+  measured against the built-in adapter's ~40 KB/s; expected remedy is a sample
+  config tune (data-length extension, larger/more ACL buffers) and re-flash —
+  plan Phase H gates on this measurement.
+- ~~To validate live~~ — **validated 2026-07-10**: BlueZ permits connections on
+  adapter B while adapter A discovers (witness scan: max sighting gap 0.3 s during
+  three concurrent dongle downloads). Caveat encoded in `smp_link`: bleak's
+  *deprecated* `adapter=` kwarg mis-routes under parallel discovery (instant
+  `InProgress` on N−1 of N connects); the typed `BlueZScannerArgs` form is
+  required.
 
 ## 4. Verification & Validation plan
 

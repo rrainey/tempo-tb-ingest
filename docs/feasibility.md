@@ -460,6 +460,93 @@ noisy. Candidate fixes: pause-aware presence aging (don't age while the scanner
 is paused), and/or radio Option 2 (dedicated scan adapter). To be prioritized
 with the operator's GitHub issues.
 
+### Phase H step 21 (partial) — 2026-07-10 (hci_usb dongle throughput tuning)
+
+Same payload (0010's 843 KB session), same host, byte-identity verified at every
+step (SHA-256 = step-7 baseline):
+
+| Dongle firmware config | Throughput |
+|---|---|
+| stock `hci_usb` (ACL 27 B × 3) | **19.0 KB/s** |
+| + DLE 251 (`BT_CTLR_DATA_LENGTH_MAX`), ACL bufs 251 B, queues ×10 | **26.4 KB/s** |
+| + SDC conn-event length 7.5 → 15 ms | 26.7 KB/s (no effect) |
+| built-in Intel adapter (reference, step 7) | 38.6 KB/s |
+
+Key learning: `CONFIG_BT_CTLR_DATA_LENGTH_MAX` (not the ACL buffer sizes) governs
+the SDC's link-layer PDU length — buffer sizing alone changed nothing until DLE
+was raised. The residual ~30 % gap to the built-in resisted the connection-event
+lever; suspected fixed per-round-trip latency in the USB-FS HCI path (un-diagnosed:
+a root btmon capture of the negotiated connection interval is the next probe if
+pursued). Final dongle config: `~/hci_usb/prj.conf` (commented).
+
+Pool-level perspective: 4 × 26.7 ≈ **107 KB/s aggregate**, ~2.8× the single
+built-in adapter. Remaining single-link lever is device-side: fs-download chunk
+1024 → ~2048 (fits the 2475 B netbuf), projected to lift the dongle path past
+40 KB/s and the built-in past 60 — a fleet reflash, deferred to the next
+tempo-bt firmware pass.
+
+**Superseded same day by pipelining (below) — the serial protocol, not the
+radio, was the ceiling.**
+
+### Pipelined SMP downloads — 2026-07-10 (issue #2 follow-on)
+
+Experiment: keep N fs-download requests in flight (SMP sequence numbers make
+responses matchable). Same 843 KB payload via the dongle:
+
+| Mode | Throughput | Integrity |
+|---|---|---|
+| serial production loop | 26.7 KB/s | ✅ |
+| prototype window 2 | 75.9 KB/s | ✅ |
+| prototype window 4 | 72.7 | ❌ lost chunk — device SMP netbuf pool overrun |
+| **production `SmpLink`, window 2 (shipped)** | **58.4 KB/s** | ✅ byte-identical; resume-from-offset also 58.5 |
+
+Implementation (permanent, on by default, window = 2): in-order sink writes
+with out-of-order buffering; strict per-response verification (sequence, `off`
+echo, chunk size); any anomaly → transport drain → automatic fallback to the
+proven serial loop resuming from the contiguous prefix; real SMP errors and
+disconnects raised, never masked. One upstream quirk fixed en route:
+smpclient's BLE `receive()` cannot tolerate coalesced responses in its notify
+buffer (raises; observed live) — `PipelinedSMPBLETransport` slices one message
+and preserves the remainder. 10 offline tests over a scripted SMP transport
+cover reordering, response loss (timeout→fallback), off-mismatch, error
+frames, resume, and window discipline.
+
+Consequences: custom dongle firmware / UART alternatives are moot; pool
+projection 4 × ~58 ≈ **230 KB/s aggregate**; the built-in adapter also
+benefits (unmeasured, expected ≥60 KB/s). The device-side chunk bump remains
+available but is no longer pressing.
+
+### Phase H steps 20–22 — 2026-07-10 (adapter pool foundations, live)
+
+Fleet: built-in + **four flashed dongles** (5 controllers). Each new dongle
+seized the system-default-adapter slot on attach — the address-based identity
+design earns its keep continuously.
+
+- **Step 20 ✅** — adapter identity/resolution (`adapters.py`, `tempo-tb-ingest
+  adapters` CLI): all 5 controllers listed with hci↔address mapping (only
+  obtainable via BlueZ D-Bus; dongles' HCI-level address is zeros); mode
+  matrix unit-tested; default config resolves to single-adapter mode.
+- **Step 21 ✅** — adapter-bound transport: `SmpLink(adapter="hciN")` binds
+  discovery + connection to a named controller. Full live contract suite
+  (11 behaviors incl. byte-identity + resume) passed **via dongle hci2 in
+  46 s**. Two upstream quirks found and handled: the stock smpclient
+  `_connect` ends with a `start_notify` that any override must reproduce
+  (omitting it = no responses ever, cancellation chaos), and **bleak's
+  deprecated `adapter=` kwarg mis-routes under parallel discovery** —
+  100 %-reproducible `org.bluez.Error.InProgress` on N-1 of N simultaneous
+  connects; the typed `BlueZScannerArgs` form routes correctly (3/3 parallel
+  rounds clean). Both worth upstream reports.
+- **Step 22 ✅** — cross-adapter concurrency proven live: **three concurrent
+  downloads on three dongles (57.9 / 48.6 / 48.0 KB/s — per-link pipelined
+  rates hold under concurrency)** while the built-in adapter scanned
+  continuously — witness device saw 2,512 sightings with **max gap 0.3 s**
+  across 107 s of triple transfer. BlueZ connect-during-other-adapter-
+  discovery: works (the earlier `InProgress` finding was same-adapter only).
+  Aggregate 8.6 MB in 108 s wall, bounded by one 6 MB file on a single link.
+
+Remaining in Phase H: step 23 (worker pool, offline) and step 24 (full
+1-scan + 4-transfer pool through the daemon, 👤).
+
 ## Roadmap
 
 1. **v1 daemon (Radio Option 1, Option A stack):** scanner + return detector + single

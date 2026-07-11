@@ -68,6 +68,11 @@ visual-design document; concept agreed in `docs/dashboard-notes.md`).
 | 17 | Dashboard | App scaffold & data layer (+ daemon snapshot additions) | vitest on client logic; replay-driven demo | ✅ 07-09 |
 | 18 | Dashboard | Visual implementation (per forthcoming design doc) | user review 👤 + kiosk soak | — |
 | 19 | Portability | Windows laptop deployment (daemon + dashboard + testbed) | W0–W3 stages per `docs/windows-options.md` 👤 | — |
+| 20 | Multi-radio | Adapter identity & resolution | unit matrix + live `adapters` listing 👤 | ✅ 07-10 |
+| 21 | Multi-radio | Adapter-bound link + dongle throughput | live contract suite via dongle 👤; ≥50 KB/s pipelined | ✅ 07-10 |
+| 22 | Multi-radio | Cross-adapter concurrency validation | scan uninterrupted during download 👤 | ✅ 07-10 |
+| 23 | Multi-radio | Worker pool (offline) | overlap/serialization/chaos tests vs fakes | — |
+| 24 | Multi-radio | Full-pool live validation (4 dongles) 👤 | N concurrent downloads; unplug chaos test | — |
 
 👤 = requires user participation / hardware in range.
 
@@ -359,6 +364,78 @@ visual-design document; concept agreed in `docs/dashboard-notes.md`).
   Results appended to the feasibility validation history.
 - **Exit**: laptop runs all three components through a rehearsal day; chosen
   option and any WinRT findings recorded in `docs/windows-options.md`.
+
+## Phase H — Multi-transceiver (radio Option 2; design §3.13, issue #2)
+
+Hardware context: one flashed `hci_usb` dongle attached now; three more arriving.
+Steps 20–22 need at most one dongle; step 23 is offline; step 24 needs the full
+pool. Dongle firmware source + DFU package: `~/hci_usb`.
+
+### Step 20 — Adapter identity & resolution
+- **Start point**: Phase E complete; ≥1 dongle attached.
+- **Objective**: config accepts BlueZ controller addresses or `hciN` for
+  `adapter.scan`/`adapter.transfer`; startup resolution via BlueZ (D-Bus — the
+  dongle's HCI-level public address is zeros, so `hciconfig` is useless);
+  `tempo-tb-ingest adapters` utility lists controllers (address, hci name, bus);
+  loud `ConfigError` for unresolvable/duplicated adapters; scan==sole-transfer ⇒
+  single-adapter mode selected.
+- **Exit criteria (tests)**: unit — spec parsing (address vs hciN), duplicate/
+  missing adapter rejection, mode selection matrix; fake resolver injected.
+  **Live check 👤**: `adapters` lists both the built-in and the dongle with the
+  addresses `bluetoothctl list` shows.
+
+### Step 21 — Adapter-bound link + dongle radio validation
+- **Start point**: Step 20 done.
+- **Objective**: adapter-bound SMP BLE transport (target discovery + connection on
+  a named adapter) plumbed through `SmpLink(adapter=…)`; harvest worker passes its
+  adapter. Measure dongle throughput; if far below the built-in's ~40 KB/s
+  (suspected: 27-byte ACL buffers), retune `~/hci_usb/prj.conf` (DLE 251, ACL
+  buffer count/size), rebuild, re-DFU, re-measure.
+- **Exit criteria (tests)**: offline gate untouched (fake link has no adapter
+  concept). **Live 👤**: the full link contract suite passes against a Tempo
+  device *via the dongle* (`TEMPO_ADAPTER=<dongle-addr> make live`); byte-identity
+  holds; measured dongle throughput recorded in feasibility history.
+  *Throughput gate re-amended 2026-07-10: pipelined downloads (window 2,
+  shipped as the SmpLink default with serial fallback) measured **58.4 KB/s via
+  the dongle** in the production path — gate is now **≥ 50 KB/s per dongle
+  link**, above the original 30. The earlier 25 KB/s relaxation is obsolete.*
+
+### Step 22 — Cross-adapter concurrency validation
+- **Start point**: Step 21 done.
+- **Objective**: prove BlueZ allows connect-on-adapter-B during discovery-on-A
+  (the `InProgress` failure was same-adapter). Scripted live run: continuous scan
+  on built-in + full download via dongle.
+- **Exit criteria**: **Live 👤** script asserts sightings continue throughout the
+  download (max sighting gap ≪ `lost_after`, no `device.away` for bench devices);
+  evidence appended to feasibility. If BlueZ refuses: fall back to
+  scan-adapter-pauses-only-during-its-own-connects design note and re-plan.
+
+### Step 23 — Worker pool (offline)
+- **Start point**: Step 21 done (22 informs but doesn't block the code shape).
+- **Objective**: `HarvestWorker` → pool: one worker task per transfer adapter over
+  the shared coalesced queue; per-adapter serialization; single-adapter mode
+  preserved bit-for-bit (pause gate + presence hooks); `adapter.lost/recovered`
+  events; statefold/daemon snapshot `active_jobs` (additive; `active_job` = first);
+  dashboard reducer/stats sum concurrent rates (scene already renders n beams).
+- **Exit criteria (tests)**: integration over fakes — 4 workers × 6 devices:
+  downloads provably overlap (fake pause hooks interleave), ≤1 job per device at a
+  time, per-adapter serialization asserted from the fake call log; adapter-loss
+  mid-job → job re-queued via sighting retry, other workers unaffected; full
+  existing single-adapter suite passes unchanged; `/state` golden fixture
+  regenerated deliberately with `active_jobs`; dashboard vitest extended for two
+  simultaneous transfers.
+
+### Step 24 — Full-pool live validation 👤
+- **Start point**: Steps 22–23 done; all four dongles flashed & attached.
+- **Objective**: the design §3.13 target configuration — scan on built-in, four
+  transfer workers — against 4–5 real devices with fresh test sessions on marked
+  cards where destructive steps apply.
+- **Exit criteria**: **Live 👤** — N concurrent downloads observed (overlapping
+  `transfer.progress` streams for ≥3 devices simultaneously); scanning
+  uninterrupted (zero spurious `device.away`); aggregate throughput ≈ N× single;
+  unplug-a-dongle chaos test: its job retries onto another adapter, pool shrinks
+  loudly, daemon survives; results + tuning notes appended to feasibility
+  validation history; dashboard shows multiple beams (screenshot for the record).
 
 ---
 

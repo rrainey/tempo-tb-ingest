@@ -127,6 +127,39 @@ def promote(
         store.close()
 
 
+@app.command()
+def adapters(
+    config: Annotated[Path | None, typer.Option(help="TOML config file")] = None,
+) -> None:
+    """List BLE controllers and how the [adapter] config resolves onto them."""
+    import asyncio
+
+    from tempo_tb_ingest.adapters import discover_adapters, resolve_roles
+    from tempo_tb_ingest.config import Config, ConfigError
+
+    found = asyncio.run(discover_adapters())
+    if not found:
+        typer.echo("no BlueZ controllers found", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"{'hci':6} {'address':18} {'powered':8} name")
+    for adapter in found:
+        typer.echo(
+            f"{adapter.hci:6} {adapter.address:18} "
+            f"{'yes' if adapter.powered else 'NO':8} {adapter.name}"
+        )
+    try:
+        cfg = Config.load(config)
+        roles = resolve_roles(cfg.adapter, found)
+    except ConfigError as exc:
+        typer.echo(f"\nconfig does not resolve: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    mode = "single-adapter" if roles.single_adapter_mode else "pool"
+    typer.echo(f"\nmode: {mode}")
+    typer.echo(f"scan:     {roles.scan.hci} ({roles.scan.address})")
+    for index, adapter in enumerate(roles.transfer, start=1):
+        typer.echo(f"transfer{index}: {adapter.hci} ({adapter.address})")
+
+
 @app.command(name="rebuild-index")
 def rebuild_index(
     config: Annotated[Path | None, typer.Option(help="TOML config file")] = None,
