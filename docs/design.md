@@ -1,6 +1,7 @@
 # tempo-tb-ingest — Design Document (v1)
 
-*Draft 2026-07-08 — for review. Companion to `docs/feasibility.md` (validated protocol
+*Living document — drafted 2026-07-08, last reconciled against the implementation
+2026-07-11. Companion to `docs/feasibility.md` (validated protocol
 facts, use case, radio options, validation history). Where this document states a
 protocol fact without citation, the feasibility study is the source.*
 
@@ -21,8 +22,9 @@ In scope for v1:
   formation grouping from log timestamps/GPS, jumper attribution from the
   user-maintained `device-owners.json` registry (§3.12), propose-and-confirm.
 - The dashboard application shell and its data contract — **implemented second**;
-  visual/creative design is specified separately (forthcoming document) and consumes
-  the contract defined here in §6.
+  the visual/creative design was agreed in `docs/dashboard-notes.md` and implemented
+  from it via iterative review (plan step 18); it consumes only the contract defined
+  here in §6.
 
 Out of scope for v1: firmware changes, device provisioning UI, deletion of sessions
 from devices. **Multi-adapter pools**, originally v1-deferred, are now in scope as
@@ -66,20 +68,25 @@ The daemon is the single owner of BLE interactions on its configured adapters
 tempo_tb_ingest/
 ├── __init__.py
 ├── __main__.py            # python -m tempo_tb_ingest
-├── cli.py                 # typer: daemon | promote | probe | replay
-├── config.py              # TOML + env loading, validation, defaults
-├── events.py              # event dataclasses, envelope, EventBus
+├── cli.py                 # typer: daemon | promote | adapters | rebuild-index | replay
+├── config.py              # TOML + env loading, validation, defaults (pydantic)
+├── adapters.py            # BlueZ controller discovery + [adapter] role resolution (§3.13)
+├── events.py              # event models, envelope, EventBus
 ├── scanner.py             # BleakScanner wrapper → advertisement stream
 ├── presence.py            # presence table + return-detection state machine
 ├── harvest.py             # job queue + harvest worker(s)
+├── daemon.py              # composition root: wires components, radio gate, sd_notify
 ├── device/
 │   ├── protocol.py        # TempoDeviceLink abstract interface
-│   ├── smp_link.py        # real impl: smpclient over bleak
+│   ├── smp_link.py        # real impl: smpclient over bleak; pipelined downloads (§3.5)
 │   ├── tempo_group.py     # SMP group-64 messages (ported from smpmgr plugin)
 │   └── fake_link.py       # scripted fake for tests (also used by replay/demo)
 ├── store.py               # staging-tree writer + SQLite session index
+├── owners.py              # device-owners.json registry: hot reload, validation (§3.12)
+├── statefold.py           # event stream → snapshot state (serves /state; resets on daemon.started)
 ├── api.py                 # aiohttp app: /state, /events (WS), static dashboard
 ├── recorder.py            # event stream → JSONL; replay JSONL → bus
+├── flightinfo.py          # log parsing: jump date, exit UTC, GPS (flight-info.sh port)
 └── promote.py             # interactive promote command
 dashboard/                 # static SPA source (built → served by api.py)
 tests/
@@ -88,8 +95,8 @@ tests/
 Two seams make the system testable without radios (V&V requirement, CLAUDE.md):
 
 - **`TempoDeviceLink`** — everything the harvest worker needs from a device:
-  `connect() / session_list() / download(path, offset, sink) / storage_info() /
-  disconnect()`. `smp_link.py` is the real implementation; `fake_link.py` serves
+  `connect() / session_list() / storage_info() / read_size(path) /
+  download(path, sink, offset, progress) / probe_testok() / disconnect()`. `smp_link.py` is the real implementation; `fake_link.py` serves
   scripted sessions from local fixture files, with configurable latency, throughput,
   and fault injection (mid-transfer disconnects, truncated lists).
 - **`AdvertisementSource`** — the scanner emits a plain async iterator of
@@ -99,8 +106,10 @@ Two seams make the system testable without radios (V&V requirement, CLAUDE.md):
 ### 3.2 Scanner (`scanner.py`)
 
 - `BleakScanner` with a detection callback on the configured scan adapter
-  (`adapter.scan`, default `hci0`), filtered to the SMP service UUID
-  (`8D53DC1D-…`) with a `Tempo-BT*` name check as corroboration.
+  (`adapter.scan`, default `hci0`). A sighting qualifies if it carries the SMP
+  service UUID (`8D53DC1D-…`) in the advertising data **or** a `Tempo-BT*` name in
+  the scan response (either alone suffices: the name arrives in a separate scan
+  response and the UUID is not always cached by BlueZ).
 - Emits raw sightings onto the advertisement stream; no policy here.
 - Restart-on-failure: if BlueZ discovery dies (D-Bus error, adapter reset), back off
   (1 s → 30 s cap), re-create the scanner, emit `scanner.degraded` /
@@ -157,11 +166,18 @@ Per-device state machine, keyed by **device id** (suffix):
   enough that normal advertising jitter and scan duty cycles don't flap it.
 - `absent_after` (default 10 min): AWAY duration that makes the next sighting a
   RETURNED event. A first-ever sighting is also RETURNED (unknown backlog).
-- **Hysteresis**: RSSI floor (default −75 dBm, config) applies to *sightings used for
-  state transitions*; sub-floor sightings still update a `last_heard_weak` field for
+- **Hysteresis**: RSSI floor (default −88 dBm, config) applies to *sightings used for
+  state transitions*; sub-floor sightings still update a `last_weak` field for
   dashboard display but don't change state. A device that completed a harvest is
   quiescent: further sightings keep it PRESENT; only a full AWAY→RETURNED cycle (or
   operator CLI `--force`) re-queues it.
+- **Pause-aware aging** (single-adapter mode): the harvest radio gate reports
+  scanner pause/resume to presence (`scanner_paused`/`scanner_resumed`), and
+  paused intervals are excluded from every silence computation — a device
+  unheard *because we stopped listening* is not absent. Without this, any
+  harvest longer than `lost_after` marks every other device AWAY (observed in
+  the first soak test). In pool mode (§3.13) the scanner never pauses and the
+  hooks are never invoked.
 - All transitions emit events (§6.2).
 
 Rationale: the firmware is radio-silent while logging, so AWAY→RETURNED closely
@@ -170,8 +186,8 @@ tracks "jump completed" even if the jumper never physically leaves range.
 ### 3.5 Harvest pipeline (`harvest.py`)
 
 A FIFO queue of harvest jobs (one per RETURNED device; duplicates coalesce). Worker
-count = number of transfer adapters (v1: one). Job state machine — every transition
-evented:
+count = number of transfer adapters (one in single-adapter mode; up to four in pool
+mode, §3.13). Job state machine — every transition evented:
 
 ```
 QUEUED → CONNECTING → ENUMERATING → DOWNLOADING (per session file)
@@ -190,7 +206,14 @@ Per job:
 4. **Download** each unknown session's `/SD:/logs/<key>/flight.txt` (path by
    convention) to a `.part` file in a spool directory, emitting throttled
    `transfer.progress` events (≤ 5 Hz). SMP `fs download` is offset-based:
-   a pre-existing `.part` resumes from its byte length.
+   a pre-existing `.part` resumes from its byte length. Downloads are
+   **pipelined** (added 2026-07-10): `smp_link` keeps a small window of chunk
+   requests in flight (default 2; ≥ 4 overruns the device's SMP netbuf pool),
+   roughly doubling throughput (26.7 → 58 KB/s via a dongle). Any pipeline
+   anomaly (lost response, offset mismatch) drains the transport of stale
+   frames, then falls back to strictly serial chunking that resumes from the
+   contiguous prefix already written — real device errors still raise; only
+   transport anomalies degrade.
 5. **Verify**: final size matches the `len` reported by the fs download protocol;
    compute SHA-256. Zero-byte or short files are failures, never stored.
 6. **Store**: atomic rename into
@@ -280,10 +303,16 @@ operator-command channel later — e.g. LED-blink identify — without rework.)
   `<data_dir>/events/YYYYMMDD.jsonl`. Rotation daily; these files are the raw
   material for dashboard development, demos, regression fixtures, and field
   diagnosis.
-- **Replay**: `tempo-tb-ingest replay <file.jsonl> [--speed 10] [--loop]` starts the
-  API server fed from the file instead of live components — the dashboard cannot
-  tell the difference. This is a first-class deliverable, not a test hack: it is how
-  the dashboard is developed and demoed without hardware.
+- **Replay**: `tempo-tb-ingest replay <file.jsonl> [--speed 10] [--loop] [--listen
+  HOST:PORT] [--static DIR]` starts the API server fed from the file instead of live
+  components — the dashboard cannot tell the difference (`--listen --static` is the
+  standard dashboard dev environment). This is a first-class deliverable, not a test
+  hack: it is how the dashboard is developed and demoed without hardware.
+- **Loop semantics**: each `--loop` cycle re-sequences events (offset past the
+  previous cycle's max `seq`, so clients never see a repeated/decreasing `seq`) and
+  injects a synthetic `daemon.started` at the cycle boundary, which resets
+  accumulated state in every consumer (§6.2) — without this, folds double-count
+  every cycle (bug found in the looping demo).
 
 ### 3.9 Configuration (`config.py`)
 
@@ -330,6 +359,10 @@ listen = "127.0.0.1:8080"
 [log]
 level = "info"           # structured JSON logs to stdout (journald)
 ```
+
+(This example is pinned verbatim by `tests/test_config.py`.) `[adapter]` entries
+accept either `hciN` names or BlueZ controller addresses; addresses are the stable
+form for multi-adapter pools (§3.13), where an example appears.
 
 ### 3.10 Process management
 
@@ -447,6 +480,8 @@ transfer = ["DC:DF:ED:91:91:1D", "…", "…", "…"]   # dongle pool (1..4)
 
 - One worker task per transfer adapter, all pulling from the shared queue —
   N devices returning together harvest **N-at-once** (bounded by pool size).
+  (Adapter-bound links and cross-adapter concurrency are implemented and
+  live-validated; the worker-pool refactor itself is plan step 23.)
 - Invariants: per-adapter serialization (a controller holds one connection at a
   time); per-device single job (existing queue coalescing); a failed job re-queues
   via the existing sighting-driven retry and may land on any adapter.
@@ -466,11 +501,13 @@ transfer = ["DC:DF:ED:91:91:1D", "…", "…", "…"]   # dongle pool (1..4)
 - **Contract**: snapshot gains `active_jobs: [0..n]` (additive; `active_job` is
   retained as its first element — §6.1 always said to treat it as 0..n). The
   `daemon.adapters` echo reports resolved roles.
-- **Known hardware risk (measured 2026-07-10)**: the stock `hci_usb` build
-  negotiates tiny host ACL buffers (27 B × 3). Throughput via the dongle must be
-  measured against the built-in adapter's ~40 KB/s; expected remedy is a sample
-  config tune (data-length extension, larger/more ACL buffers) and re-flash —
-  plan Phase H gates on this measurement.
+- ~~Known hardware risk: stock `hci_usb` negotiates tiny host ACL buffers
+  (27 B × 3)~~ — **resolved 2026-07-10**: the dongles run a tuned build
+  (`CONFIG_BT_CTLR_DATA_LENGTH_MAX=251` is the decisive knob; ACL buffer sizes
+  alone change nothing — build/flash instructions in `~/hci_usb/README.md`),
+  lifting 19 → 26.7 KB/s; pipelined downloads (§3.5) then reach ~58 KB/s per
+  dongle — *above* the built-in adapter's serial ~40 KB/s. The plan's
+  throughput gate (step 21) is ≥ 50 KB/s, met with margin.
 - ~~To validate live~~ — **validated 2026-07-10**: BlueZ permits connections on
   adapter B while adapter A discovers (witness scan: max sighting gap 0.3 s during
   three concurrent dongle downloads). Caveat encoded in `smp_link`: bleak's
@@ -487,6 +524,7 @@ Test tiers (pytest + pytest-asyncio; `ruff` + `mypy --strict` as static gates):
 | Unit | (default) | nothing | presence state machine (time-warped clock), session diffing, folder mapping, event schemas, config parsing, index ops, flight-info parsing against fixture logs |
 | Integration | (default) | nothing | scanner→detector→harvest→store end-to-end over `fake_link` + scripted advertisements, incl. fault injection: mid-transfer drop + resume, truncated session list, zero-byte file, duplicate hash, WS snapshot/stream coherence |
 | Replay | (default) | recorded JSONL fixtures | event-stream compatibility (a schema change that breaks stored recordings fails CI), dashboard data contract |
+| Dashboard | (vitest) | nothing | view-model reducer (tier EMA/hysteresis, badges, reset-on-`daemon.started`), WS client reconnect/stale logic, golden wire fixtures shared with the Python side, real-recording replay |
 | Live read-only | `-m live` | any Tempo-BT in range | discovery, session-list, one real download, SHA-256 match against a reference copy |
 | Live destructive | `-m destructive` | dev device + **`testok`-marked SD card** | interrupted-transfer resume against a real radio drop, re-harvest after card reimage, (future) session-delete paths |
 
@@ -527,6 +565,7 @@ core and are all testable without hardware.
 | Harvested device absent from registry | stored with `jumper = NULL`; fixable via `promote --reattribute` | `owners.unmapped` |
 | Formation grouping ambiguity (window overlap / GPS disagreement) | flagged in promote proposal; operator resolves | *(promote output, not an event)* |
 | Staging disk full / unwritable | job FAILED loudly; daemon keeps scanning | `store.error` |
+| Transfer adapter vanishes, pool mode (unplug/USB reset) | only that worker degrades; pool capacity shrinks; in-flight job re-queues via sighting retry; daemon stays up (§3.13; step 23) | `adapter.lost` / `adapter.recovered` |
 
 No error path substitutes fabricated data or silently succeeds.
 
@@ -562,8 +601,8 @@ in both snapshot and envelope. Additive changes only within v1; removals/renames
 }
 ```
 
-Dashboard-driven additions (2026-07-09, additive; populated by the step-17
-data-layer work — see `docs/dashboard-notes.md`):
+Dashboard-driven additions (2026-07-09, additive; implemented in the step-17
+data layer — see `docs/dashboard-notes.md`):
 
 - `conflicted` per device (identity-conflict glyph).
 - `pending_download` per device and in `totals`: sessions discovered on the
@@ -572,8 +611,9 @@ data-layer work — see `docs/dashboard-notes.md`):
 - `jumper` is resolved from the ownership registry directly (immediate on first
   sighting), not only from harvest-time attribution.
 
-`active_job` is `null` when idle; becomes a list if/when multi-adapter lands (the
-dashboard should treat it as `0..n`).
+`active_job` is `null` when idle. Pool mode (§3.13; step 23) adds an additive
+`active_jobs: [0..n]` list, with `active_job` retained as its first element — the
+dashboard has always been required to treat active jobs as `0..n`.
 
 `id` is the canonical device key throughout (§3.3); `mac` is informational — the
 current power-on-session address — and may change between appearances of the same
@@ -588,8 +628,11 @@ them without the daemon ever processing them.
   "type": "transfer.progress", "data": { … } }
 ```
 
-`seq` is a per-daemon-run monotonic counter (resets on restart; a `daemon.started`
-event signals clients to re-snapshot).
+`seq` is a per-daemon-run monotonic counter (resets on restart). `daemon.started`
+is the universal reset signal: every stateful consumer (the daemon's own
+`statefold`, the dashboard reducer) discards accumulated state when it arrives —
+this is what makes loop-replay (§3.8) coherent — and a live client should also
+re-snapshot, since events were missed while the daemon was down.
 
 | Type | Key `data` fields | Notes |
 |---|---|---|
@@ -617,24 +660,26 @@ event signals clients to re-snapshot).
 | `harvest.completed` | id, sessions_downloaded, bytes, duration_s | |
 | `harvest.failed` | id, reason, attempt, will_retry | |
 | `stream.gap` | dropped_count | slow-consumer marker; client should re-snapshot |
+| `adapter.lost` / `adapter.recovered` | adapter (address, hci) | pool mode only (§3.13); additive, lands with step 23 |
 
 This vocabulary is intentionally rich enough to animate the full walk-in-the-door
 story: appearance → return detection → connection → per-file progress → verified
 storage.
 
-## 7. Dashboard (architectural spec; visuals deferred)
+## 7. Dashboard
 
-- **Form**: static SPA (Vite + React + TypeScript; D3/SVG for bespoke graphics),
-  built to `dashboard/dist/`, served by the daemon; zero runtime dependencies beyond
-  the daemon. Runs full-screen in Chromium `--kiosk` on the workstation; any other
+- **Form**: static SPA (Vite + React + TypeScript, strict; bespoke SVG scene —
+  no charting library), built to `dashboard/dist/`, served by the daemon; zero
+  runtime dependencies beyond the daemon. Runs full-screen in Chromium `--kiosk` on the workstation; any other
   browser on the LAN may view simultaneously (multi-viewer is free).
 - **Behavior**: snapshot-then-stream client per §6; read-only; auto-reconnect with
   re-snapshot; visible "stale" indicator if the stream drops (never silently
   frozen).
 - **Dev/demo mode**: runs identically against `replay` (§3.8) — the visual design
   work needs no hardware present.
-- **Concept** (agreed 2026-07-09; full brainstorm in `docs/dashboard-notes.md`,
-  visual-design document to follow): a dark, monochrome-green diorama of the
+- **Concept** (agreed 2026-07-09; full brainstorm in `docs/dashboard-notes.md`;
+  implemented at step 18 directly from those notes via iterative review, in place
+  of a separate visual-design document): a dark, monochrome-green diorama of the
   dropzone. AWAY devices float above an "in the sky" line with away timers;
   visible devices sit in three RSSI tiers (EMA-smoothed with hysteresis, strongest
   at the bottom) as rounded-rect cards showing device index + jumper name and a
@@ -648,9 +693,12 @@ storage.
 ## 8. Dependencies
 
 Runtime: `smpclient` (SMP + BLE via bleak), `bleak`, `aiohttp`, `typer`, `pydantic`
-(event/config models), stdlib `sqlite3`. Dev: `pytest`, `pytest-asyncio`, `ruff`,
-`mypy`. Python ≥ 3.12; packaged with `pyproject.toml` (`uv` for dev environments,
-plain `pip` install supported). Group-64 message classes are ported from
+(event/config models), stdlib `sqlite3`; `adapters.py` additionally uses
+`dbus_fast` (already a bleak dependency) directly for BlueZ controller
+enumeration. Dev: `pytest`, `pytest-asyncio`, `ruff`, `mypy`. Python ≥ 3.12;
+packaged with `pyproject.toml` (`uv` for dev environments, plain `pip` install
+supported). Dashboard: React 18 is the only runtime dependency; Vite,
+TypeScript (strict), and `vitest` as the toolchain. Group-64 message classes are ported from
 `tempo-insights/smpmgr-extensions/plugins/tempo_group.py` into
 `device/tempo_group.py` (single source going forward; the smpmgr plugin remains the
 manual diagnostic harness).
@@ -667,7 +715,12 @@ Each milestone has explicit verification before the next begins (V&V approach).
 | M3 | Harvest pipeline + store + index | end-to-end vs fake; **live destructive tier vs dev device + `testok` card** (interrupted resume) |
 | M4 | API (`/state`, `/events`), recorder, replay | WS contract tests; recorded live session replays cleanly |
 | M5 | systemd deployment; field trial at dropzone | validation run appended to feasibility doc; threshold tuning notes |
-| M6 | Dashboard v1 per visual-design doc | replay-driven demo; kiosk soak test |
+| M6 | Dashboard v1 per `docs/dashboard-notes.md` | replay-driven demo; kiosk soak test |
+
+Status (2026-07-11): M0–M4 complete; M5 deployment artifacts done, dropzone field
+trial pending; M6 implemented, kiosk soak pending. A follow-on phase (multi-adapter
+pool, §3.13) is in progress. Per-step status lives in
+`docs/implementation-plan.md`; validation results in `docs/feasibility.md`.
 
 ## 10. Open questions (carried into implementation)
 
@@ -691,6 +744,7 @@ Each milestone has explicit verification before the next begins (V&V approach).
    at each session's exit event); `gps_max_separation_m = 500` validated by the
    golden test reproducing the hand-built 20260206 formations, and by the real
    20260705 2-way (exits ~40 m apart vs. the same-day solo ~800 m away).
-6. Dashboard visual design — concept and decisions agreed 2026-07-09
-   (`docs/dashboard-notes.md`); the visual-design document (look, motion,
-   typography) remains forthcoming (owner: Riley) and gates step 18.
+6. ~~Dashboard visual design~~ — **resolved 2026-07-10**: implemented at step 18
+   directly from `docs/dashboard-notes.md` via iterative review (no separate
+   visual-design document was needed); continued visual refinement and the kiosk
+   soak remain open under step 18.

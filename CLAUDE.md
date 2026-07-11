@@ -7,14 +7,21 @@ any sessions not already in the local store, and stages them for analysis by
 `tempo-testbed` (`../tempo-testbed/device-data/<Device>/logs/<YYYYMMDD>/<SESSION>/flight.txt`).
 
 Authoritative background: `docs/feasibility.md` (validated protocol facts, dropzone use
-case, architecture decisions, risks). The design document lives in `docs/` alongside it.
+case, architecture decisions, risks, **validation history**). The other documents:
+`docs/design.md` (architecture, event/snapshot contract, error policy — reconciled
+against the implementation), `docs/implementation-plan.md` (step-by-step V&V plan with
+per-step exit criteria and current status), `docs/dashboard-notes.md` (agreed dashboard
+visual concept; step-18 implementation source), `docs/windows-options.md` (Windows
+deployment options), `deploy/` (systemd unit, example config, install README). Dongle
+firmware for the transfer-adapter pool (tuned Zephyr `hci_usb`) lives outside the repo
+at `~/hci_usb` with its own build/DFU README.
 
 ## Deliverables (in implementation order)
 
 1. **Ingestion daemon** — Python 3.12 asyncio; `smpclient`/bleak over BlueZ (Ubuntu 24).
    Components: continuous scanner → return detector → serialized harvest worker(s),
-   local session index, and a structured real-time event stream (WebSocket/SSE +
-   state-snapshot endpoint) designed in from the start. Plus a `promote` command
+   local session index, and a structured real-time event stream (snapshot-first
+   WebSocket + state-snapshot endpoint) designed in from the start. Plus a `promote` command
    (stage → `tempo-testbed/test-data/` analysis cases): formation grouping from log
    exit-times/GPS; jumper names and load organizer (= default formation base) from
    the user-maintained `device-owners.json` in the staging root, bound to sessions
@@ -30,6 +37,11 @@ case, architecture decisions, risks). The design document lives in `docs/` along
   against a **fake device/transport layer** so scanner→detector→harvest flows are
   testable without radios; BLE and filesystem access must sit behind narrow,
   mockable interfaces.
+- **Test entry points**: `make check` = the offline gate (ruff + `mypy --strict` +
+  pytest; hardware tiers excluded by default) — must be green before any step is
+  called done. Hardware tiers are opt-in: `make live` (read-only, any Tempo-BT in
+  range) and `make destructive` (dev device + `testok`-marked card only). Dashboard:
+  `npm test` (vitest) in `dashboard/`.
 - **Event-stream replay is a first-class test asset**: record real event streams
   (JSONL), replay them to drive the dashboard and regression tests without hardware.
 - **Validation** = periodic end-to-end runs against a live Tempo-BT device (byte-level
@@ -60,8 +72,12 @@ case, architecture decisions, risks). The design document lives in `docs/` along
   `<YYYYMMDD>/<8HEX>` (session == jump), per firmware v1.5.0 `SESSION_LIST`.
   Do not copy protocol assumptions from `tempo-insights` — several are stale;
   `docs/feasibility.md` is the source of truth.
-- Adapter roles (scan vs. transfer) are configuration, so single-adapter v1 scales to
-  a multi-dongle pool without redesign.
+- Adapter roles (scan vs. transfer) are configuration: single-adapter mode (scanner
+  paused per connection) and pool mode (dedicated scan adapter + up to four dongle
+  transfer workers, never paused) are the same daemon (design §3.13). Configuration
+  identifies adapters by **BlueZ controller address**, not `hciN` (indices depend on
+  plug order; the dongles' HCI-level public address reads all-zeros, so resolution
+  must go through BlueZ — `tempo-tb-ingest adapters` lists what's present).
 
 ## Related repos (same VS Code workspace)
 
