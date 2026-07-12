@@ -201,8 +201,16 @@ class SmpLink(TempoDeviceLink):
 
     async def session_list(self) -> SessionListResult:
         self.call_log.note("session_list")
-        response = await self._request(tg.SessionList())
-        return tg.session_list_result(response)
+        response = await self._request(tg.SessionList(page=0))
+        keys = [str(entry["name"]) for entry in response.sessions if "name" in entry]
+        truncated = bool(response.truncated)
+        # Firmware >= 1.6.0 pages the list (64 sessions per page); older
+        # firmware omits total_pages and sends all it can in one response.
+        for page in range(1, response.total_pages or 0):
+            response = await self._request(tg.SessionList(page=page))
+            keys.extend(str(entry["name"]) for entry in response.sessions if "name" in entry)
+            truncated = truncated or bool(response.truncated)
+        return SessionListResult(keys=keys, truncated=truncated)
 
     async def storage_info(self) -> StorageInfo:
         self.call_log.note("storage_info")

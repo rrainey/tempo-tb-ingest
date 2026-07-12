@@ -7,8 +7,14 @@ the daemon uses are ported — harvesting never writes to a device (CLAUDE.md).
 
 SESSION_LIST semantics (firmware v1.5.0): session == jump; each entry is
 ``{"name": "<YYYYMMDD>/<8HEX>"}``, a session key relative to the device logs
-root. The response carries ``truncated`` (bounds: 32 date dirs / 64 sessions
-per response). ``truncated`` is optional for tolerance of older firmware.
+root. The response carries ``truncated`` (bounds: 64 date dirs / 64 sessions
+per date). ``truncated`` is optional for tolerance of older firmware.
+
+Firmware v1.6.0 adds paging: the request takes an optional ``page`` (0-based,
+64 sessions per page) and the response reports ``page``/``total_pages``/
+``total_sessions``. Entries are sorted by date directory descending, then by
+session id ascending. All paging fields are optional for tolerance of older
+firmware, which ignores ``page`` and returns a single unsorted page.
 """
 
 from enum import IntEnum, unique
@@ -48,6 +54,8 @@ class SessionListRequest(smpmsg.ReadRequest):
     _GROUP_ID = MGMT_GROUP_ID_TEMPO
     _COMMAND_ID = TEMPO_MGMT_ID_SESSION_LIST
 
+    page: int | None = None
+
 
 class SessionListResponse(smpmsg.ReadResponse):
     _GROUP_ID = MGMT_GROUP_ID_TEMPO
@@ -56,6 +64,9 @@ class SessionListResponse(smpmsg.ReadResponse):
     sessions: list[dict[str, Any]]
     count: int
     truncated: bool | None = None
+    page: int | None = None
+    total_pages: int | None = None
+    total_sessions: int | None = None
 
 
 class SessionList(SessionListRequest):

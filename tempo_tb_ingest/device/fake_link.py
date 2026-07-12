@@ -96,7 +96,10 @@ class FakeLink(TempoDeviceLink):
         self.call_log.note("session_list")
         self._require_connected()
         await self._maybe_pause()
-        return SessionListResult(keys=sorted(self._sessions), truncated=self._truncated)
+        # Firmware >= 1.6.0 order: date directory descending, id ascending
+        keys = sorted(self._sessions)
+        keys.sort(key=lambda k: k.split("/", 1)[0], reverse=True)
+        return SessionListResult(keys=keys, truncated=self._truncated)
 
     async def storage_info(self) -> StorageInfo:
         self.call_log.note("storage_info")
