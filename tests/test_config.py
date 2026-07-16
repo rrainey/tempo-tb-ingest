@@ -34,7 +34,7 @@ exit_window_s = 120              # formation grouping window (§3.11)
 gps_max_separation_m = 500      # freefall proximity cross-check
 
 [dropzone]                       # copied verbatim into generated metadata.json
-name = "Texoma (North TX)"
+name = "Spaceland Dallas"
 lat_deg = 33.4569
 lon_deg = -96.3770
 elevation_m = 233.0

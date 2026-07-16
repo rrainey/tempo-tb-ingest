@@ -21,7 +21,7 @@ data_dir = "/var/lib/tempo-tb-ingest"
 test_data_root = "/home/riley/src/tempo-testbed/test-data"
 
 [dropzone]
-name = "Texoma (North TX)"
+name = "Spaceland Dallas"
 lat_deg = 33.4569
 lon_deg = -96.3770
 elevation_m = 233.0

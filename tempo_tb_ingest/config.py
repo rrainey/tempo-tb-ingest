@@ -85,7 +85,7 @@ class PromoteConfig(_Section):
 class DropzoneConfig(_Section):
     """Copied verbatim into generated metadata.json (design §3.11)."""
 
-    name: str = "Texoma (North TX)"
+    name: str = "Spaceland Dallas"
     lat_deg: float = Field(default=33.4569, ge=-90, le=90)
     lon_deg: float = Field(default=-96.3770, ge=-180, le=180)
     elevation_m: float = 233.0
